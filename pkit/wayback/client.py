@@ -234,7 +234,6 @@ class WaybackClient:
         url: str,
         *,
         opts: SaveOptions | None = None,
-        dry_run: bool = False,
     ) -> SaveResult:
         """Save one URL using the Wayback Machine SPN2 API."""
         opts = opts or SaveOptions()
@@ -242,10 +241,6 @@ class WaybackClient:
 
         if not url:
             result.error = "No target URL provided."
-            return result
-        # TODO: remove dry run features
-        if dry_run:
-            result.archive_url = f"{BASE_URL}/web/20260101000000id_/{url}"
             return result
 
         try:

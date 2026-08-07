@@ -134,11 +134,6 @@ def cli(
     help="Output JSON. If URL is omitted or '-', read JSON from stdin.",
 )
 @click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Simulate execution without network calls.",
-)
-@click.option(
     "--capture-all",
     is_flag=True,
     default=_DEFAULTS.capture_all,
@@ -176,7 +171,6 @@ def save(
     ctx: click.Context,
     url: str | None,
     json_output: bool,
-    dry_run: bool,
     capture_all: bool,
     capture_outlinks: bool,
     email_result: bool,
@@ -209,7 +203,6 @@ def save(
     result = client.save_url(
         url,
         opts=opts,
-        dry_run=dry_run,
     )
 
     if result.error:
