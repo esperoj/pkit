@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pkit"
+version = "0.1.0"
+description = "BusyBox-style personal tools"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.1",
+    "requests>=2.31",
+]
+
+[project.scripts]
+pkit = "pkit.cli:cli"
+wayback = "pkit.wayback.cli:cli"
