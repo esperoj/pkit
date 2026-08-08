@@ -4,14 +4,93 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "BusyBox-style personal tools"
+license = { file = "LICENSE" }
 requires-python = ">=3.13"
 dependencies = [
-    "click>=8.1",
-    "requests>=2.31",
+    "click>=8.4.2",
+    "requests>=2.34.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "requests-mock>=1.11",
+    "ruff>=0.5",
+    "pyright>=1.1",
 ]
 
 [project.scripts]
 pkit = "pkit.cli:cli"
 wayback = "pkit.wayback.cli:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["pkit"]
+omit = [
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["pkit", "tests"]
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pkit"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+include = ["pkit", "tests"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "build",
+    "dist",
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+typeCheckingMode = "basic"
+useLibraryCodeForTypes = true
+
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportMissingParameterType = false
+reportPrivateUsage = false
+reportUnnecessaryTypeIgnoreComment = false

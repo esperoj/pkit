@@ -19,15 +19,27 @@ from typing import Any
 import click
 
 from .. import __version__
-from ..common.cli_helpers import emit_result, fail, read_stdin_payload
+from ..common.cli_helpers import (
+    EXIT_ERROR,
+    EXIT_TEMPFAIL,
+    EXIT_USAGE,
+    emit_result,
+    fail,
+    read_stdin_payload,
+)
 from .client import (
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
+    AuthError,
+    InputError,
+    JobTimeoutError,
+    RateLimitError,
     SaveOptions,
-    SaveResult,
     WaybackClient,
+    WaybackError,
 )
+
 
 _OPTION_FIELDS = {field.name for field in dataclasses.fields(SaveOptions)}
 _FALSE_STRINGS = {"", "0", "false", "no", "off"}
@@ -43,14 +55,13 @@ def _as_bool(value: Any) -> bool:
 
 def _coerce_options(payload: dict[str, Any]) -> dict[str, bool]:
     """Extract known SaveOptions fields from a JSON payload."""
-    return {
-        key: _as_bool(value)
-        for key, value in payload.items()
-        if key in _OPTION_FIELDS
-    }
+    return {key: _as_bool(value) for key, value in payload.items() if key in _OPTION_FIELDS}
 
 
-def _save_options_from_params(params: dict[str, Any], payload: dict[str, Any]) -> SaveOptions:
+def _save_options_from_params(
+    params: dict[str, Any],
+    payload: dict[str, Any],
+) -> SaveOptions:
     """Build SaveOptions from CLI flags and optional stdin JSON payload.
 
     JSON payload values override CLI flag values, matching the original behavior.
@@ -58,6 +69,24 @@ def _save_options_from_params(params: dict[str, Any], payload: dict[str, Any]) -
     values = {name: params[name] for name in _OPTION_FIELDS}
     values.update(_coerce_options(payload))
     return SaveOptions(**values)
+
+
+def _exit_code_for_error(exc: Exception) -> int:
+    """Map SDK exceptions to stable CLI exit codes.
+
+    Exit-code contract:
+      0  success
+      1  unknown / unexpected failure
+      2  usage/input/auth/config error, user can fix
+      75 temporary failure, retry later
+    """
+    if isinstance(exc, (InputError, AuthError)):
+        return EXIT_USAGE
+
+    if isinstance(exc, (RateLimitError, JobTimeoutError)):
+        return EXIT_TEMPFAIL
+
+    return EXIT_ERROR
 
 
 @click.group(
@@ -192,14 +221,11 @@ def save(
         url, payload = read_stdin_payload(json_output, primary_key="url")
 
     if not url:
-        fail(
-            "No target URL provided.",
-            result=SaveResult(url="", error="No target URL provided."),
-            json_output=json_output,
-        )
+        fail("No target URL provided.", exit_code=EXIT_USAGE)
 
     opts = _save_options_from_params(ctx.params, payload)
 
+<<<<<<< HEAD
     result = client.save_url(
         url,
         opts=opts,
@@ -209,21 +235,20 @@ def save(
         fail(
             result.error,
             result=result,
+=======
+    try:
+        result = client.save_url(url, opts=opts)
+    except WaybackError as exc:
+        fail(str(exc), exit_code=_exit_code_for_error(exc))
+    except Exception as exc:
+        fail(str(exc), exit_code=EXIT_ERROR)
+    else:
+        emit_result(
+            result,
+>>>>>>> 4708c76 (add tests)
             json_output=json_output,
+            plain=lambda r: r.archive_url,
         )
-
-    if not result.archive_url:
-        fail(
-            "No archive URL returned.",
-            result=result,
-            json_output=json_output,
-        )
-
-    emit_result(
-        result,
-        json_output=json_output,
-        plain=lambda r: r.archive_url,
-    )
 
 
 # Future commands can be added here:

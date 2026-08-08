@@ -9,9 +9,15 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict, is_dataclass
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 import click
+
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_TEMPFAIL = 75
 
 
 def read_stdin_payload(
@@ -29,9 +35,11 @@ def read_stdin_payload(
         Attempts to parse stdin as JSON.
 
         If stdin is a JSON object, returns:
+
             (payload.get(primary_key), payload)
 
         If stdin is a JSON scalar, returns:
+
             (str(payload), {})
 
         If stdin is invalid JSON, treats it as plain text.
@@ -71,7 +79,9 @@ def emit_result(
     that should be printed to stdout.
     """
     if json_output:
-        payload = asdict(result) if is_dataclass(result) and not isinstance(result, type) else result
+        payload = (
+            asdict(result) if is_dataclass(result) and not isinstance(result, type) else result
+        )
         click.echo(json.dumps(payload, indent=2))
         return
 
@@ -83,22 +93,14 @@ def emit_result(
 def fail(
     message: str,
     *,
-    result: Any | None = None,
-    json_output: bool = False,
-) -> None:
+    exit_code: int = EXIT_ERROR,
+) -> NoReturn:
     """Print an error to stderr and exit non-zero.
 
-    In JSON mode, emits a JSON payload before exiting.
+    Unix convention:
+      - stdout is for data;
+      - stderr is for diagnostics;
+      - exit code is for scripting.
     """
-    if json_output:
-        if result is not None and is_dataclass(result) and not isinstance(result, type):
-            payload = asdict(result)
-        elif result is not None:
-            payload = result
-        else:
-            payload = {"error": message}
-
-        click.echo(json.dumps(payload, indent=2))
-
     click.echo(f"Error: {message}", err=True)
-    raise SystemExit(1)
+    raise SystemExit(exit_code)

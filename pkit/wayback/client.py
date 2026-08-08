@@ -1,7 +1,7 @@
 """Wayback Machine SDK client.
 
 This module is library-only. It should not depend on Click or CLI concerns.
-It returns structured dataclasses and raises/collects errors in a controlled way.
+Success returns structured dataclasses; failure raises typed exceptions.
 """
 
 from __future__ import annotations
@@ -15,15 +15,14 @@ from typing import Any
 
 import requests
 
+
 BASE_URL = "https://web.archive.org"
 DEFAULT_LOCK_FILE = "/tmp/spn2_submit.lock"
-
 ENV_ACCESS_KEY = "INTERNET_ARCHIVE_ACCESS_KEY"
 ENV_SECRET_KEY = "INTERNET_ARCHIVE_SECRET_KEY"
 
 QUEUE_WAIT_TIMEOUT = 300.0
 JOB_POLL_TIMEOUT = 180.0
-
 QUEUE_MIN_AVAILABLE = 1
 QUEUE_POLL_INTERVAL = 10.0
 JOB_POLL_INTERVAL = 15.0
@@ -32,6 +31,18 @@ SUBMIT_SETTLE_TIME = 1.0
 
 class WaybackError(Exception):
     """Base exception for Wayback Machine SDK errors."""
+
+
+class InputError(WaybackError):
+    """Raised when the caller provides invalid input."""
+
+
+class AuthError(WaybackError):
+    """Raised when authentication or authorization fails."""
+
+
+class RateLimitError(WaybackError):
+    """Raised when the remote service rate-limits the request."""
 
 
 class JobTimeoutError(WaybackError):
@@ -57,14 +68,13 @@ class SaveOptions:
         return {key: int(value) for key, value in asdict(self).items()}
 
 
-@dataclass
+@dataclass(frozen=True)
 class SaveResult:
-    """Result of a single URL save operation."""
+    """Successful result of a single URL save operation."""
 
     url: str
-    archive_url: str | None = None
-    job_id: str | None = None
-    error: str | None = None
+    archive_url: str
+    job_id: str
 
 
 class WaybackClient:
@@ -73,9 +83,9 @@ class WaybackClient:
     This client is intentionally synchronous and simple. It can later grow
     additional methods such as:
 
-        - cdx_snapshots()
-        - latest_snapshot()
-        - digest()
+    - cdx_snapshots()
+    - latest_snapshot()
+    - digest()
 
     while reusing authentication, proxy configuration, timeout, and session.
     """
@@ -137,9 +147,20 @@ class WaybackClient:
             response.raise_for_status()
         except requests.HTTPError as exc:
             response = exc.response
+
             if response is None:
                 raise WaybackError(str(exc)) from exc
-            raise WaybackError(f"HTTP {response.status_code}: {response.text}") from exc
+
+            message = f"HTTP {response.status_code}: {response.text}"
+
+            if response.status_code in {401, 403}:
+                raise AuthError(message) from exc
+
+            if response.status_code == 429:
+                raise RateLimitError(message) from exc
+
+            raise WaybackError(message) from exc
+
         except requests.RequestException as exc:
             raise WaybackError(str(exc)) from exc
 
@@ -204,6 +225,7 @@ class WaybackClient:
 
             # Small settle delay preserved from the original implementation.
             time.sleep(SUBMIT_SETTLE_TIME)
+
             return str(job_id)
 
     def _poll_save_job(self, url: str, job_id: str) -> str:
@@ -237,28 +259,32 @@ class WaybackClient:
     ) -> SaveResult:
         """Save one URL using the Wayback Machine SPN2 API."""
         opts = opts or SaveOptions()
-        result = SaveResult(url=url)
 
         if not url:
+<<<<<<< HEAD
             result.error = "No target URL provided."
             return result
+=======
+            raise InputError("No target URL provided.")
+>>>>>>> 4708c76 (add tests)
 
-        try:
-            job_id = self._submit_save_job(url, opts)
-            result.job_id = job_id
-            result.archive_url = self._poll_save_job(url, job_id)
-        except Exception as exc:
-            result.error = str(exc)
+        job_id = self._submit_save_job(url, opts)
+        archive_url = self._poll_save_job(url, job_id)
 
-        return result
+        return SaveResult(
+            url=url,
+            archive_url=archive_url,
+            job_id=job_id,
+        )
 
-    # Future methods can live here and reuse the same session/auth/proxy:
-    #
-    # def cdx_snapshots(self, url: str) -> list[CdxSnapshot]:
-    #     ...
-    #
-    # def latest_snapshot(self, url: str) -> CdxSnapshot | None:
-    #     ...
-    #
-    # def digest(self, url: str) -> DigestResult:
-    #     ...
+
+# Future methods can live here and reuse the same session/auth/proxy:
+#
+# def cdx_snapshots(self, url: str) -> list[CdxSnapshot]:
+#     ...
+#
+# def latest_snapshot(self, url: str) -> CdxSnapshot | None:
+#     ...
+#
+# def digest(self, url: str) -> DigestResult:
+#     ...
