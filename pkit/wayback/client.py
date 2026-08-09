@@ -15,7 +15,6 @@ from typing import Any
 
 import requests
 
-
 BASE_URL = "https://web.archive.org"
 DEFAULT_LOCK_FILE = "/tmp/spn2_submit.lock"
 ENV_ACCESS_KEY = "INTERNET_ARCHIVE_ACCESS_KEY"
@@ -115,7 +114,7 @@ class WaybackClient:
         """Close the underlying HTTP session."""
         self._session.close()
 
-    def __enter__(self) -> "WaybackClient":
+    def __enter__(self) -> WaybackClient:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:

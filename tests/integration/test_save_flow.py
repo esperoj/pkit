@@ -226,6 +226,5 @@ def test_sdk_auth_error(requests_mock, disable_sleep, monkeypatch):
         text="Unauthorized",
     )
 
-    with WaybackClient(lock_file="", timeout=0.1) as client:
-        with pytest.raises(AuthError):
-            client.save_url("http://example.com")
+    with WaybackClient(lock_file="", timeout=0.1) as client, pytest.raises(AuthError):
+        client.save_url("http://example.com")

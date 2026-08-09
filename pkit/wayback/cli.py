@@ -40,7 +40,6 @@ from .client import (
     WaybackError,
 )
 
-
 _OPTION_FIELDS = {field.name for field in dataclasses.fields(SaveOptions)}
 _FALSE_STRINGS = {"", "0", "false", "no", "off"}
 _DEFAULTS = SaveOptions()

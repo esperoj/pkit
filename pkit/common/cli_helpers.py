@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
-from typing import Any, Callable, NoReturn
+from typing import Any, NoReturn
 
 import click
-
 
 EXIT_OK = 0
 EXIT_ERROR = 1
