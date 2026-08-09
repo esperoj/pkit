@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 import sys
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -23,7 +25,7 @@ class FakeStdin:
         return self._is_tty
 
 
-def _cli_runner_kwargs() -> dict[str, bool]:
+def _cli_runner_kwargs() -> dict[str, Any]:
     """Return CliRunner kwargs for stdout/stderr separation across Click versions.
 
     Older Click versions accept:
@@ -34,10 +36,8 @@ def _cli_runner_kwargs() -> dict[str, bool]:
     default.
     """
     params = inspect.signature(CliRunner.__init__).parameters
-
     if "mix_stderr" in params:
         return {"mix_stderr": False}
-
     return {}
 
 
@@ -58,7 +58,7 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture
-def client() -> WaybackClient:
+def client() -> Generator[WaybackClient]:
     """SDK client with lock disabled for unit tests."""
     c = WaybackClient(
         api_key="test-key",

@@ -25,9 +25,7 @@ from pkit.wayback.client import (
 def test_init_uses_env_credentials(monkeypatch):
     monkeypatch.setenv(ENV_ACCESS_KEY, "env-key")
     monkeypatch.setenv(ENV_SECRET_KEY, "env-secret")
-
     client = WaybackClient(lock_file="")
-
     assert client._session.headers["Authorization"] == "LOW env-key:env-secret"
     client.close()
 
@@ -35,13 +33,11 @@ def test_init_uses_env_credentials(monkeypatch):
 def test_init_explicit_credentials_override_env(monkeypatch):
     monkeypatch.setenv(ENV_ACCESS_KEY, "old-key")
     monkeypatch.setenv(ENV_SECRET_KEY, "old-secret")
-
     client = WaybackClient(
         api_key="new-key",
         api_secret="new-secret",
         lock_file="",
     )
-
     assert client._session.headers["Authorization"] == "LOW new-key:new-secret"
     client.close()
 
@@ -49,45 +45,35 @@ def test_init_explicit_credentials_override_env(monkeypatch):
 def test_init_no_auth_header_when_credentials_missing(monkeypatch):
     monkeypatch.delenv(ENV_ACCESS_KEY, raising=False)
     monkeypatch.delenv(ENV_SECRET_KEY, raising=False)
-
     client = WaybackClient(lock_file="")
-
     assert "Authorization" not in client._session.headers
     client.close()
 
 
 def test_lock_file_none_uses_default():
     client = WaybackClient(lock_file=None)
-
     assert client.lock_file == DEFAULT_LOCK_FILE
     client.close()
 
 
 def test_endpoint_applies_proxy():
     client = WaybackClient(proxy_prefix="http://proxy/", lock_file="")
-
     assert client._endpoint("/save") == "http://proxy/https://web.archive.org/save"
-
     client.close()
 
 
 def test_close_closes_session(monkeypatch):
     client = WaybackClient(lock_file="")
     called = []
-
     monkeypatch.setattr(client._session, "close", lambda: called.append(True))
-
     client.close()
-
     assert called == [True]
 
 
 def test_context_manager_closes_session(monkeypatch):
     called = []
-
     with WaybackClient(lock_file="") as client:
         monkeypatch.setattr(client._session, "close", lambda: called.append(True))
-
     assert called == [True]
 
 
@@ -97,26 +83,22 @@ def test_save_result_is_frozen():
         archive_url="http://archive",
         job_id="job1",
     )
-
     with pytest.raises(dataclasses.FrozenInstanceError):
-        result.url = "changed"
+        result.url = "changed"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_request_returns_json_dict(requests_mock, client):
     requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
-
     assert client._request("GET", "/thing") == {"a": 1}
 
 
 def test_request_wraps_json_list(requests_mock, client):
     requests_mock.get(f"{BASE_URL}/thing", json=[1, 2])
-
     assert client._request("GET", "/thing") == {"data": [1, 2]}
 
 
 def test_request_returns_raw_text_when_not_json(requests_mock, client):
     requests_mock.get(f"{BASE_URL}/thing", text="hello")
-
     assert client._request("GET", "/thing") == {"raw_response": "hello"}
 
 
@@ -140,7 +122,6 @@ def test_request_http_status_exceptions(
         status_code=status_code,
         text="nope",
     )
-
     with pytest.raises(expected_exception):
         client._request("GET", "/thing")
 
@@ -160,7 +141,6 @@ def test_request_connection_error(requests_mock, client):
         f"{BASE_URL}/thing",
         exc=requests.exceptions.ConnectTimeout,
     )
-
     with pytest.raises(WaybackError):
         client._request("GET", "/thing")
 
@@ -173,10 +153,8 @@ def test_locked_disabled(client):
 def test_locked_creates_file(tmp_path):
     lock = tmp_path / "lock"
     client = WaybackClient(lock_file=str(lock))
-
     with client._locked():
         assert lock.exists()
-
     client.close()
 
 
@@ -253,7 +231,6 @@ def test_wait_for_availability_ignores_availability_errors(client, monkeypatch):
 def test_wait_for_availability_timeout(client, monkeypatch):
     values = iter([0.0, 301.0])
     sleeps = []
-
     monkeypatch.setattr(
         "pkit.wayback.client.time.monotonic",
         lambda: next(values),
@@ -271,7 +248,6 @@ def test_wait_for_availability_timeout(client, monkeypatch):
 
 def test_submit_save_job_posts_options(client, monkeypatch):
     posted = []
-
     monkeypatch.setattr(client, "_wait_for_availability", lambda: None)
 
     def fake_request(method, path, *, data=None, timeout=None):
@@ -292,9 +268,7 @@ def test_submit_save_job_posts_options(client, monkeypatch):
     job_id = client._submit_save_job("http://example.com", opts)
 
     assert job_id == "job1"
-
     method, path, data = posted[0]
-
     assert method == "POST"
     assert path == "/save"
     assert data["url"] == "http://example.com"
@@ -377,7 +351,6 @@ def test_poll_save_job_failure(client, monkeypatch, payload, match):
 
 def test_poll_save_job_timeout(client, monkeypatch):
     values = iter([0.0, 181.0])
-
     monkeypatch.setattr(
         "pkit.wayback.client.time.monotonic",
         lambda: next(values),

@@ -160,6 +160,7 @@ Use:
 - Module docstrings.
 - Public function docstrings.
 - Comments only where they explain why, not what.
+- All public interface must use correct type hints.
 
 Prefer clarity over brevity.
 
