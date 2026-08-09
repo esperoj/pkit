@@ -109,7 +109,9 @@ class WaybackClient:
         self._session.headers.update({"Accept": "application/json"})
 
         if self.api_key and self.api_secret:
-            self._session.headers["Authorization"] = f"LOW {self.api_key}:{self.api_secret}"
+            self._session.headers["Authorization"] = (
+                f"LOW {self.api_key}:{self.api_secret}"
+            )
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -248,7 +250,12 @@ class WaybackClient:
                 time.sleep(JOB_POLL_INTERVAL)
                 continue
 
-            detail = response.get("error") or response.get("message") or status or "unknown status"
+            detail = (
+                response.get("error")
+                or response.get("message")
+                or status
+                or "unknown status"
+            )
             raise JobFailedError(f"SPN2 job {job_id} failed: {detail!r}")
 
     def save_url(
@@ -261,12 +268,7 @@ class WaybackClient:
         opts = opts or SaveOptions()
 
         if not url:
-<<<<<<< HEAD
-            result.error = "No target URL provided."
-            return result
-=======
             raise InputError("No target URL provided.")
->>>>>>> 4708c76 (add tests)
 
         job_id = self._submit_save_job(url, opts)
         archive_url = self._poll_save_job(url, job_id)

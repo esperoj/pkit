@@ -55,7 +55,11 @@ def _as_bool(value: Any) -> bool:
 
 def _coerce_options(payload: dict[str, Any]) -> dict[str, bool]:
     """Extract known SaveOptions fields from a JSON payload."""
-    return {key: _as_bool(value) for key, value in payload.items() if key in _OPTION_FIELDS}
+    return {
+        key: _as_bool(value)
+        for key, value in payload.items()
+        if key in _OPTION_FIELDS
+    }
 
 
 def _save_options_from_params(
@@ -225,17 +229,6 @@ def save(
 
     opts = _save_options_from_params(ctx.params, payload)
 
-<<<<<<< HEAD
-    result = client.save_url(
-        url,
-        opts=opts,
-    )
-
-    if result.error:
-        fail(
-            result.error,
-            result=result,
-=======
     try:
         result = client.save_url(url, opts=opts)
     except WaybackError as exc:
@@ -245,7 +238,6 @@ def save(
     else:
         emit_result(
             result,
->>>>>>> 4708c76 (add tests)
             json_output=json_output,
             plain=lambda r: r.archive_url,
         )
