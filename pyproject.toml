@@ -19,7 +19,7 @@ dev = [
     "pytest-cov>=5.0",
     "requests-mock>=1.12.1",
     "ruff>=0.16.1",
-    "pyright>=1.1",
+    "pyright>=1.1.411",
 ]
 
 [project.scripts]
