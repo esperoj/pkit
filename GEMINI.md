@@ -116,9 +116,11 @@ Longevity is more important than cleverness.
 
 The repository follows a small, explicit layout:
 
+```
 pkit/
   __init__.py
   cli.py
+  version.py
   common/
     __init__.py
     cli_helpers.py
@@ -126,10 +128,12 @@ pkit/
     __init__.py
     cli.py
     client.py
+```
 
 Responsibilities:
 
 - pkit/cli.py is the BusyBox-style top-level CLI.
+- pkit/version.py resolves the package version lazily.
 - pkit/common/cli_helpers.py contains generic CLI helpers only.
 - pkit/wayback/cli.py contains Wayback-specific CLI behavior.
 - pkit/wayback/client.py contains the Wayback SDK client.
@@ -142,6 +146,8 @@ Rules:
 - cli_helpers.py must not contain Wayback-specific logic.
 - Wayback option coercion belongs in pkit/wayback/cli.py.
 - Shared Unix CLI helpers belong in pkit/common/cli_helpers.py.
+- The version lives only in pyproject.toml. Never hardcode it in Python or tests; use pkit.version.get_version() when a version is needed.
+- Version bumps and release tags go through `make bump VERSION=x.y.z` and `make release VERSION=x.y.z`; never edit the version by hand.
 
 ---
 
@@ -203,13 +209,17 @@ SDK errors should be typed exceptions, not error strings embedded in result obje
 
 Avoid SDK APIs like:
 
+```
 result = client.save_url(url)
 if result.error:
     ...
+```
 
 Prefer:
 
+```
 result = client.save_url(url)
+```
 
 and let failures raise.
 
@@ -246,7 +256,9 @@ Error output should be short and human-readable.
 
 Example:
 
+```
 Error: No target URL provided.
+```
 
 Do not print errors to stdout.
 
@@ -258,10 +270,12 @@ Use exit codes for scripting.
 
 Preferred contract:
 
+```
 0   success
 1   unknown or unexpected failure
 2   usage, input, authentication, or configuration error
 75  temporary failure, retry later
+```
 
 Meaning:
 
@@ -311,11 +325,11 @@ Do not add custom error metadata unless absolutely necessary.
 
 Avoid JSON error objects like:
 
-error_class
-error_hint
-error_type
-error_code
-retryable
+- error_class
+- error_hint
+- error_type
+- error_code
+- retryable
 
 unless a real consumer requires them.
 
@@ -344,13 +358,15 @@ The CLI should map SDK exceptions to exit codes.
 
 Suggested mapping:
 
-InputError -> exit 2
-AuthError -> exit 2
+```
+InputError     -> exit 2
+AuthError      -> exit 2
 RateLimitError -> exit 75
-JobTimeoutError -> exit 75
+JobTimeoutError-> exit 75
 JobFailedError -> exit 1
-WaybackError -> exit 1
+WaybackError   -> exit 1
 unexpected Exception -> exit 1
+```
 
 The CLI should not expose exception class names to users unless useful for debugging.
 

@@ -55,6 +55,28 @@ check: format-check lint typecheck coverage ## Run full local check.
 .PHONY: fix
 fix: lint-fix format ## Apply safe lint fixes and formatting.
 
+.PHONY: bump
+bump: ## Set the project version. Usage: make bump VERSION=x.y.z
+	$(if $(VERSION),,$(error usage: make bump VERSION=x.y.z))
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-]?[0-9A-Za-z][0-9A-Za-z.-]*)?$$' || { echo "error: VERSION must look like x.y.z"; exit 2; }
+	@sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | grep -q . || { echo "error: no version field found in pyproject.toml"; exit 1; }
+	sed -i 's/^version = ".*"/version = "$(VERSION)"/' pyproject.toml
+	@echo "pyproject.toml version set to $(VERSION)"
+
+.PHONY: release
+release: ## Bump VERSION, run full check, commit, and tag. Usage: make release VERSION=x.y.z
+	$(if $(VERSION),,$(error usage: make release VERSION=x.y.z))
+	@command -v git >/dev/null 2>&1 || { echo "error: git is required for release."; exit 1; }
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = "main" || { echo "error: release from the main branch."; exit 1; }
+	@git diff --quiet && git diff --cached --quiet || { echo "error: working tree is not clean; commit or stash changes first."; exit 1; }
+	$(MAKE) dev
+	$(MAKE) bump VERSION=$(VERSION)
+	$(MAKE) check
+	git add pyproject.toml
+	git commit -m "Release v$(VERSION)"
+	git tag -a "v$(VERSION)" -m "v$(VERSION)"
+	@echo "Tagged v$(VERSION). Push with: git push origin main v$(VERSION)"
+
 .PHONY: clean
 clean: ## Remove caches and build artifacts.
 	rm -rf .pytest_cache .ruff_cache .coverage coverage.xml htmlcov build dist *.egg-info

@@ -18,7 +18,6 @@ from typing import Any
 
 import click
 
-from .. import __version__
 from ..common.cli_helpers import (
     EXIT_ERROR,
     EXIT_TEMPFAIL,
@@ -27,6 +26,7 @@ from ..common.cli_helpers import (
     fail,
     read_stdin_payload,
 )
+from ..version import get_version
 from .client import (
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
@@ -74,17 +74,16 @@ def _exit_code_for_error(exc: Exception) -> int:
     """Map SDK exceptions to stable CLI exit codes.
 
     Exit-code contract:
-      0  success
-      1  unknown / unexpected failure
-      2  usage/input/auth/config error, user can fix
-      75 temporary failure, retry later
+
+        0   success
+        1   unknown / unexpected failure
+        2   usage/input/auth/config error, user can fix
+        75  temporary failure, retry later
     """
     if isinstance(exc, (InputError, AuthError)):
         return EXIT_USAGE
-
     if isinstance(exc, (RateLimitError, JobTimeoutError)):
         return EXIT_TEMPFAIL
-
     return EXIT_ERROR
 
 
@@ -93,7 +92,7 @@ def _exit_code_for_error(exc: Exception) -> int:
     no_args_is_help=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-@click.version_option(version=__version__)
+@click.version_option(version=get_version())
 @click.option(
     "--key",
     "--api-key",
@@ -138,7 +137,6 @@ def cli(
 ) -> None:
     """Wayback Machine commands."""
     ctx.ensure_object(dict)
-
     client = WaybackClient(
         api_key=api_key,
         api_secret=api_secret,
@@ -146,7 +144,6 @@ def cli(
         lock_file=lock_file,
         timeout=timeout,
     )
-
     # Namespace the client so it does not collide with other tools in a
     # BusyBox-style super CLI.
     ctx.obj["wayback.client"] = client
@@ -207,10 +204,8 @@ def save(
 ) -> None:
     """Save one URL to the Wayback Machine using SPN2."""
     client: WaybackClient = ctx.obj["wayback.client"]
-
     if url == "-":
         url = None
-
     payload: dict[str, Any] = {}
 
     # Unix convention:
@@ -223,7 +218,6 @@ def save(
         fail("No target URL provided.", exit_code=EXIT_USAGE)
 
     opts = _save_options_from_params(ctx.params, payload)
-
     try:
         result = client.save_url(url, opts=opts)
     except WaybackError as exc:

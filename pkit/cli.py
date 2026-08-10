@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from . import __version__
+from .version import get_version
 from .wayback.cli import cli as wayback_cli
 
 
@@ -13,19 +13,13 @@ from .wayback.cli import cli as wayback_cli
     no_args_is_help=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-@click.version_option(version=__version__)
+@click.version_option(version=get_version())
 def cli() -> None:
     """pkit: collection of archival and preservation utilities."""
 
 
-# Mount the Wayback Machine CLI as:
-#
-#   pkit wayback ...
-#
-# The same Wayback group can also be exposed standalone as:
-#
-#   wayback ...
-#
+# Register subcommands at module level so they are available to Click's
+# help formatter before the group callback is ever executed.
 cli.add_command(wayback_cli, name="wayback")
 
 
