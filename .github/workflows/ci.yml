@@ -43,7 +43,7 @@ jobs:
 
   docker:
     name: Build container image
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.default_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
