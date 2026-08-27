@@ -76,6 +76,15 @@ release: ## Bump VERSION, run full check, commit, and tag. Usage: make release V
 	git commit -m "Release v$(VERSION)"
 	git tag -a "v$(VERSION)" -m "v$(VERSION)"
 	@echo "Tagged v$(VERSION). Push with: git push origin main v$(VERSION)"
+.PHONY: setup-remotes
+
+setup-remotes:
+	@git config --remove-section remote.origin
+	@git remote add origin git@github.com:esperoj/pkit.git
+	@git remote set-url --push origin git@github.com:esperoj/pkit.git
+	@git remote set-url --add --push origin git@codefloe.com:esperoj/pkit.git
+	@echo "Remotes configured:"
+	@git remote -v
 
 .PHONY: clean
 clean: ## Remove caches and build artifacts.
