@@ -222,7 +222,6 @@ class WaybackClient:
             if not job_id:
                 raise WaybackError(f"Missing job_id in SPN2 response: {response}")
 
-            # Small settle delay preserved from the original implementation.
             time.sleep(SUBMIT_SETTLE_TIME)
 
             return str(job_id)
