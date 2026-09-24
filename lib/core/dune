@@ -1,0 +1,3 @@
+(library
+ (name pkit_core)
+ (libraries yojson bos))

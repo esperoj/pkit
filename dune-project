@@ -1,0 +1,23 @@
+(lang dune 3.16)
+(name pkit)
+(generate_opam_files true)
+
+(package
+ (name pkit)
+ (synopsis "BusyBox-style personal CLI toolkit")
+ (description "A polyglot monorepo containing OCaml, Python, and Bash tools for archival and preservation workflows.")
+ (maintainers "Esperoj <esperoj@example.com>")
+ (authors "Esperoj <esperoj@example.com>")
+ (homepage "https://github.com/esperoj/pkit")
+ (bug_reports "https://github.com/esperoj/pkit/issues")
+ (license "MIT")
+ (depends
+  (ocaml (>= 5.1.0))
+  (cmdliner (>= 1.3.0))
+  (ezcurl (>= 0.2.2))
+  (bos (>= 0.2.1))
+  (yojson (>= 2.2.2))
+  (ppx_deriving_yojson (>= 3.10.0))
+  (ptime (>= 1.2.0))
+  (fmt (>= 0.9.0))
+  (logs (>= 0.7.0))))

@@ -1,0 +1,4 @@
+(executable
+ (name pkit)
+ (public_name pkit)
+ (libraries pkit_wayback cmdliner))

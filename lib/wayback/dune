@@ -1,0 +1,4 @@
+(library
+ (name pkit_wayback)
+ (libraries pkit_core cmdliner ezcurl yojson bos unix)
+ (preprocess (pps ppx_deriving_yojson)))
