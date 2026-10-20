@@ -1,0 +1,56 @@
+{
+  "name": "proxy",
+  "main": "src/index.js",
+  "workers_dev": true,
+  "preview_urls": true,
+  "compatibility_date": "2026-06-04",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  // Top-level defaults (Global Proxy)
+  "routes": [
+    {
+      "pattern": "proxy.workers.esperoj.dev",
+      "zone_name": "esperoj.dev",
+      "custom_domain": true,
+      "enabled": true,
+      "previews_enabled": false
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": false,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": false,
+      "persist": true,
+      "head_sampling_rate": 1
+    }
+  },
+
+  // Environment Overrides
+  "env": {
+    "sjc": {
+      "name": "sjc-proxy",
+      "routes": [
+        {
+          "pattern": "sjc-proxy.esperoj.eu.org",
+          "zone_name": "esperoj.eu.org",
+          "custom_domain": true,
+          "enabled": true,
+          "previews_enabled": false
+        }
+      ],
+      // Force Worker placement near AWS San Jose (N. California / us-west-1)
+      "placement": {
+        "region": "gcp:us-west3"
+      }
+    }
+  }
+}
