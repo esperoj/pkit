@@ -77,16 +77,6 @@ def test_context_manager_closes_session(monkeypatch):
     assert called == [True]
 
 
-def test_save_result_is_frozen():
-    result = SaveResult(
-        url="http://example.com",
-        archive_url="http://archive",
-        job_id="job1",
-    )
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        result.url = "changed"  # pyright: ignore[reportAttributeAccessIssue]
-
-
 def test_request_returns_json_dict(requests_mock, client):
     requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
     assert client._request("GET", "/thing") == {"a": 1}

@@ -46,8 +46,8 @@ format-check: ## Check formatting without changing files.
 	$(BIN)/ruff format --check .
 
 .PHONY: typecheck
-typecheck: ## Run pyright static type checking.
-	$(BIN)/pyright
+typecheck:
+	$(BIN)/ty check
 
 .PHONY: check
 check: format-check lint typecheck coverage ## Run full local check.
