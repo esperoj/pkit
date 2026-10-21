@@ -222,8 +222,6 @@ def save(
         result = client.save_url(url, opts=opts)
     except WaybackError as exc:
         fail(str(exc), exit_code=_exit_code_for_error(exc))
-    except Exception as exc:
-        fail(str(exc), exit_code=EXIT_ERROR)
     else:
         emit_result(
             result,

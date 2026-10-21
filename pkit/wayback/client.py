@@ -11,7 +11,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Self
 
 import requests
 
@@ -114,7 +114,7 @@ class WaybackClient:
         """Close the underlying HTTP session."""
         self._session.close()
 
-    def __enter__(self) -> WaybackClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
