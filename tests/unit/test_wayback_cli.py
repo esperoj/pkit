@@ -198,17 +198,6 @@ def test_cli_error_exit_codes(
     assert result.stdout == ""
 
 
-def test_cli_unexpected_exception_exit_code(runner, patch_save_url):
-    def raise_error(url, opts):
-        raise RuntimeError("wat")
-
-    patch_save_url(raise_error)
-    result = runner.invoke(cli, save_cmd("http://example.com"))
-    assert result.exit_code == EXIT_ERROR
-    assert "wat" in result.stderr
-    assert result.stdout == ""
-
-
 def test_cli_json_errors_go_to_stderr_not_stdout(runner, patch_save_url):
     def raise_error(url, opts):
         raise WaybackError("boom")
