@@ -1,20 +1,25 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, dataclass_transform
 
-type Entity = Agent | Book
 
+@dataclass_transform(kw_only_default=True, frozen_default=True)
+def entity_model(cls):
+    return dataclass(cls, frozen=True, slots=True, kw_only=True)
+
+@entity_model
+class Entity:
+    id: str
+    slug: str
+    extra: dict[str, Any] = field(default_factory=dict)
 
 # example: https://www.wikidata.org/wiki/Q501514
-@dataclass(frozen=True, slots=True)
-class Book:
+@entity_model
+class Book(Entity):
     title: str
-    author: str
-    publisher: str
-    date: str
-    identifier: str
+    publication_date: str | None = None
+    author_ids: list[str] = field(default_factory=list)
+    publisher_ids: list[str] = field(default_factory=list)
 
-
-@dataclass(frozen=True, slots=True)
-class Agent:
+@entity_model
+class Person(Entity):
     name: str
-    born: str
-    identifier: str
