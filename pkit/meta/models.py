@@ -9,17 +9,24 @@ def entity_model(cls):
 @entity_model
 class Entity:
     id: str
+    type: str
     slug: str
+    identifiers: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
-# example: https://www.wikidata.org/wiki/Q501514
 @entity_model
 class Book(Entity):
     title: str
-    publication_date: str | None = None
+    publication_date: str
+    lang: str
+    description: str
     author_ids: list[str] = field(default_factory=list)
     publisher_ids: list[str] = field(default_factory=list)
 
 @entity_model
 class Person(Entity):
     name: str
+    gender: str
+    birth_date: str
+    country: str
+    occupations: list[str] = field(default_factory=list)
