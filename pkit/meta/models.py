@@ -29,7 +29,9 @@ class Book(Entity):
     lang: str
     description: str
     author_ids: list[str] = field(default_factory=list)
-    publisher_ids: list[str] = field(default_factory=list)
+
+    # publishers are things I don't care much about so only stored as list of strings.
+    publishers: list[str] = field(default_factory=list)
 
 
 @entity_model
@@ -38,5 +40,6 @@ class Person(Entity):
     name: str
     gender: str
     birth_date: str
+    death_date: str
     country: str
     occupations: list[str] = field(default_factory=list)
