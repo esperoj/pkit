@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -26,7 +26,7 @@ def connect(path: str | Path = "library.db") -> sqlite3.Connection:
 
 
 @contextmanager
-def session(path: str | Path = "library.db") -> Iterator[sqlite3.Connection]:
+def session(path: str | Path = "library.db") -> Generator[sqlite3.Connection]:
     """
     Simple transaction scope.
 
