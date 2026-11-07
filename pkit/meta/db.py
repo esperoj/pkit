@@ -9,7 +9,7 @@ from typing import Any
 from pkit.meta.models import Entity
 from pkit.meta.serialize import from_json, to_json
 
-SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+SCHEMA_PATH = Path(__file__).resolve().with_name("schema.sql")
 
 
 def connect(path: str | Path = "library.db") -> sqlite3.Connection:
@@ -48,35 +48,32 @@ def session(path: str | Path = "library.db") -> Generator[sqlite3.Connection]:
 
 def setup(conn: sqlite3.Connection) -> None:
     """
-    Load and run schema.sql.
-
-    This creates tables if missing and replaces triggers.
-    It does not drop your main data tables.
+    Create real tables, view, and triggers.
     """
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(schema_sql)
     conn.commit()
 
 
-def reset_sync_depth(conn: sqlite3.Connection) -> None:
-    """
-    Emergency reset for the trigger sync guard.
-
-    Normally not needed because trigger statements roll back cleanly.
-    """
-    conn.execute("UPDATE sync_control SET depth = 0 WHERE id = 1")
+def _now(conn: sqlite3.Connection) -> str:
+    return conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
 
 
 def create_entity(conn: sqlite3.Connection, entity: Entity) -> Entity:
     """
-    Insert a new entity. Fails if the entity id already exists.
+    Insert a new entity through the entities view.
     """
     conn.execute(
         """
         INSERT INTO entities (id, type, slug, payload)
         VALUES (?, ?, ?, ?)
         """,
-        (entity.id, entity.type, entity.slug, to_json(entity)),
+        (
+            entity.id,
+            entity.type,
+            entity.slug,
+            to_json(entity),
+        ),
     )
     return entity
 
@@ -85,63 +82,68 @@ def save_entity(conn: sqlite3.Connection, entity: Entity) -> Entity:
     """
     Insert or update an entity by id.
 
-    If you want the smallest possible CRUD surface, you can use only:
-        save_entity()
-        get_entity()
-        list_entities()
-        delete_entity()
+    SQLite upsert through a writable view is not as nice as upsert on a real
+    table, so this does a simple existence check first.
     """
-    conn.execute(
-        """
-        INSERT INTO entities (id, type, slug, payload)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            type = excluded.type,
-            slug = excluded.slug,
-            payload = excluded.payload,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        """,
-        (entity.id, entity.type, entity.slug, to_json(entity)),
-    )
-    return entity
+    exists = conn.execute(
+        "SELECT 1 FROM entities WHERE id = ?",
+        (entity.id,),
+    ).fetchone()
+
+    if exists is None:
+        return create_entity(conn, entity)
+
+    return update_entity(conn, entity)
 
 
 def update_entity(conn: sqlite3.Connection, entity: Entity) -> Entity:
     """
-    Update an existing entity. Fails if the entity id does not exist.
+    Update an existing entity through the entities view.
     """
-    cur = conn.execute(
+    exists = conn.execute(
+        "SELECT 1 FROM entities WHERE id = ?",
+        (entity.id,),
+    ).fetchone()
+
+    if exists is None:
+        raise LookupError(f"entity {entity.id!r} not found")
+
+    conn.execute(
         """
         UPDATE entities
         SET
             type = ?,
             slug = ?,
-            payload = ?,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            payload = ?
         WHERE id = ?
         """,
-        (entity.type, entity.slug, to_json(entity), entity.id),
+        (
+            entity.type,
+            entity.slug,
+            to_json(entity),
+            entity.id,
+        ),
     )
-
-    if cur.rowcount == 0:
-        raise LookupError(f"entity {entity.id!r} not found")
 
     return entity
 
 
-def get_entity(conn: sqlite3.Connection, entity_id: str) -> Entity | None:
+def get_entity(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    include_archived: bool = False,
+) -> Entity | None:
     """
-    Fetch one entity by id and convert its payload back into a model.
-    """
-    row = conn.execute(
-        """
-        SELECT payload
-        FROM entities
-        WHERE id = ?
-        """,
-        (entity_id,),
-    ).fetchone()
+    Fetch one entity by id.
 
+    By default archived entities are hidden.
+    """
+    sql = "SELECT payload FROM entities WHERE id = ?"
+
+    if not include_archived:
+        sql += " AND archived_at = ''"
+
+    row = conn.execute(sql, (entity_id,)).fetchone()
     if row is None:
         return None
 
@@ -151,18 +153,28 @@ def get_entity(conn: sqlite3.Connection, entity_id: str) -> Entity | None:
 def list_entities(
     conn: sqlite3.Connection,
     entity_type: str | None = None,
+    include_archived: bool = False,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[Entity]:
     """
-    List entities, optionally filtered by type.
+    List entities.
+
+    By default archived entities are hidden.
     """
     sql = "SELECT payload FROM entities"
+    where: list[str] = []
     params: list[Any] = []
 
+    if not include_archived:
+        where.append("archived_at = ''")
+
     if entity_type is not None:
-        sql += " WHERE type = ?"
+        where.append("type = ?")
         params.append(entity_type)
+
+    if where:
+        sql += " WHERE " + " AND ".join(where)
 
     sql += " ORDER BY updated_at DESC"
 
@@ -174,17 +186,91 @@ def list_entities(
     return [from_json(row["payload"]) for row in rows]
 
 
-def delete_entity(conn: sqlite3.Connection, entity_id: str) -> bool:
+def archive_entity(conn: sqlite3.Connection, entity_id: str) -> bool:
     """
-    Delete an entity by id.
+    Soft-delete an entity by marking it archived.
 
-    Returns True if an entity row was deleted.
+    This is the normal replacement for delete.
     """
-    cur = conn.execute(
+    exists = conn.execute(
+        """
+        SELECT 1
+        FROM entities
+        WHERE id = ? AND archived_at = ''
+        """,
+        (entity_id,),
+    ).fetchone()
+
+    if exists is None:
+        return False
+
+    now = _now(conn)
+
+    conn.execute(
+        """
+        UPDATE entities
+        SET archived_at = ?
+        WHERE id = ?
+        """,
+        (now, entity_id),
+    )
+
+    return True
+
+
+def unarchive_entity(conn: sqlite3.Connection, entity_id: str) -> bool:
+    """
+    Restore an archived entity.
+    """
+    exists = conn.execute(
+        """
+        SELECT 1
+        FROM entities
+        WHERE id = ? AND archived_at <> ''
+        """,
+        (entity_id,),
+    ).fetchone()
+
+    if exists is None:
+        return False
+
+    conn.execute(
+        """
+        UPDATE entities
+        SET archived_at = ''
+        WHERE id = ?
+        """,
+        (entity_id,),
+    )
+
+    return True
+
+
+def purge_entity(conn: sqlite3.Connection, entity_id: str) -> bool:
+    """
+    Dangerous hard delete.
+
+    This is intentionally not the normal delete path.
+    It only deletes entities that are already archived.
+    """
+    exists = conn.execute(
+        """
+        SELECT 1
+        FROM entities
+        WHERE id = ? AND archived_at <> ''
+        """,
+        (entity_id,),
+    ).fetchone()
+
+    if exists is None:
+        return False
+
+    conn.execute(
         """
         DELETE FROM entities
         WHERE id = ?
         """,
         (entity_id,),
     )
-    return cur.rowcount > 0
+
+    return True
