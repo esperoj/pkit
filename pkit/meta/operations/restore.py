@@ -1,10 +1,11 @@
-from threading import local
 from os import getenv
 from pathlib import Path
-from pkit.meta.serialize import from_json
-import pkit.meta.db as db
 
-def restore():   
+from pkit.meta import db
+from pkit.meta.serialize import from_json
+
+
+def restore():
     data_path = Path.home() / ".local" / "share" / "pkit"
     archive_path = Path(getenv("PKIT_META_ARCHIVE", str(data_path / "records")))
     db_path = Path(getenv("PKIT_META_DB", str(data_path / "records.db")))
