@@ -29,8 +29,6 @@ class Book(Entity):
     lang: str
     description: str
     author_ids: list[str] = field(default_factory=list)
-
-    # publishers are things I don't care much about so only stored as list of strings.
     publishers: list[str] = field(default_factory=list)
 
 

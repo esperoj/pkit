@@ -6,7 +6,6 @@ from typing import Any
 
 from pkit.meta.models import Book, Entity, Person
 
-# Add future entity models here.
 MODEL_REGISTRY: dict[str, type[Entity]] = {
     "book": Book,
     "person": Person,
@@ -17,8 +16,6 @@ def to_dict(model: Entity) -> dict[str, Any]:
     """
     Convert an Entity model into a plain JSON-compatible dict.
     """
-    if not isinstance(model, Entity):
-        raise TypeError(f"expected an Entity, got {type(model)!r}")
     return asdict(model)
 
 
@@ -26,16 +23,13 @@ def to_json(model: Entity) -> str:
     """
     Convert an Entity model into a JSON payload string.
     """
-    return dumps(to_dict(model), ensure_ascii=False, sort_keys=True)
+    return dumps(to_dict(model), indent=2, ensure_ascii=False, sort_keys=True)
 
 
 def from_dict(data: dict[str, Any]) -> Entity:
     """
     Convert a JSON-compatible dict back into the correct Entity model.
     """
-    if not isinstance(data, dict):
-        raise TypeError("expected a dict")
-
     data = dict(data)
 
     entity_type = data.get("type")
