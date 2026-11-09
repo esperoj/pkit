@@ -4,41 +4,53 @@ from dataclasses import asdict, fields
 from json import dumps, loads
 from typing import Any
 
-from pkit.meta.models import Book, Entity, Person
+from pkit.meta.models import RECORD_TYPES, Record
 
-MODEL_REGISTRY: dict[str, type[Entity]] = {
-    "book": Book,
-    "person": Person,
-}
+__all__ = [
+    "MODEL_REGISTRY",
+    "from_dict",
+    "from_json",
+    "to_dict",
+    "to_json",
+]
 
 
-def to_dict(model: Entity) -> dict[str, Any]:
+# Compatibility alias.
+MODEL_REGISTRY = RECORD_TYPES
+
+
+def to_dict(model: Record) -> dict[str, Any]:
     """
-    Convert an Entity model into a plain JSON-compatible dict.
+    Convert a Record model into a plain JSON-compatible dict.
     """
     return asdict(model)
 
 
-def to_json(model: Entity) -> str:
+def to_json(model: Record) -> str:
     """
-    Convert an Entity model into a JSON payload string.
+    Convert a Record model into a JSON payload string.
     """
-    return dumps(to_dict(model), indent=2, ensure_ascii=False, sort_keys=True)
+    return dumps(
+        to_dict(model),
+        indent=2,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
-def from_dict(data: dict[str, Any]) -> Entity:
+def from_dict(data: dict[str, Any]) -> Record:
     """
-    Convert a JSON-compatible dict back into the correct Entity model.
+    Convert a JSON-compatible dict back into the correct Record model.
     """
     data = dict(data)
 
-    entity_type = data.get("type")
-    if not isinstance(entity_type, str) or not entity_type:
-        raise ValueError("entity data must contain a string 'type'")
+    record_type = data.get("type")
+    if not isinstance(record_type, str) or not record_type:
+        raise ValueError("record data must contain a string 'type'")
 
-    cls = MODEL_REGISTRY.get(entity_type)
+    cls = RECORD_TYPES.get(record_type)
     if cls is None:
-        raise ValueError(f"unknown entity type: {entity_type}")
+        raise ValueError(f"unknown record type: {record_type}")
 
     # Ignore unknown keys so old code can tolerate future payload additions.
     allowed = {f.name for f in fields(cls)}
@@ -47,11 +59,11 @@ def from_dict(data: dict[str, Any]) -> Entity:
     try:
         return cls(**kwargs)
     except TypeError as exc:
-        raise ValueError(f"invalid data for entity type '{entity_type}'") from exc
+        raise ValueError(f"invalid data for record type '{record_type}'") from exc
 
 
-def from_json(payload: str | bytes) -> Entity:
+def from_json(payload: str | bytes) -> Record:
     """
-    Convert a JSON payload string/bytes back into the correct Entity model.
+    Convert a JSON payload string/bytes back into the correct Record model.
     """
     return from_dict(loads(payload))
