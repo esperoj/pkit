@@ -31,22 +31,19 @@ def restore(
     """
     cfg = meta_config.load()
 
-    if db_path is None:
-        db_path = cfg.db_path
-
-    if repo_path is None:
-        repo_path = cfg.repo_path
-
+    db_path = db_path or cfg.db_path
+    repo_path = repo_path or cfg.repo_path
     repo_path = Path(repo_path).expanduser()
+
     if not repo_path.is_dir():
         return 0
 
     count = 0
 
-    with records.session(db_path) as conn:
+    with records.open(db_path) as rcs:
         for file_path in sorted(repo_path.rglob("*.json")):
             record = from_json(file_path.read_bytes())
-            records.put(conn, record)
+            rcs.put(record)
             count += 1
 
     return count
