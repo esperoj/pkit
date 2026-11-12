@@ -1,93 +1,58 @@
+"""Generic config: TOML file + environment, one precedence rule for all of pkit."""
+
 from __future__ import annotations
 
 import os
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
-__all__ = [
-    "DEFAULT_CONFIG_PATH",
-    "as_bool",
-    "get",
-    "load_toml",
-    "path",
-]
-
+__all__ = ["DEFAULT_CONFIG_PATH", "as_bool", "as_path", "load", "pick", "resolve"]
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pkit" / "config.toml"
+T = TypeVar("T")
 
 
-def load_toml(path: str | Path | None = None) -> dict[str, Any]:
-    """
-    Load TOML config.
-
-    Resolution order for the config file path:
-
-        explicit path argument
-          -> PKIT_CONFIG environment variable
-          -> ~/.config/pkit/config.toml
-
-    Missing file is not an error.
-    """
-    if path is None:
-        path = os.environ.get("PKIT_CONFIG") or DEFAULT_CONFIG_PATH
-
-    path = Path(path).expanduser()
-
-    if not path.exists():
+def load(path: str | Path | None = None) -> dict[str, Any]:
+    """Explicit path > $PKIT_CONFIG > ~/.config/pkit/config.toml. Missing file = {}."""
+    path = Path(path or os.environ.get("PKIT_CONFIG") or DEFAULT_CONFIG_PATH).expanduser()
+    if not path.is_file():
         return {}
-
     with path.open("rb") as fh:
         return tomllib.load(fh)
 
 
-def get(
+def pick(
     env_key: str,
-    *,
     file_value: Any = None,
     default: Any = None,
     cast: Callable[[Any], Any] | None = None,
 ) -> Any:
-    """
-    Pick a config value.
-
-    Precedence:
-
-        environment variable
-          -> TOML file value
-          -> default
-
-    Empty environment variables are treated as unset.
-
-    Conversion is explicit:
-
-        config.get(..., cast=config.path)
-        config.get(..., cast=config.as_bool)
-    """
-    value = os.environ.get(env_key)
-
-    if value is None or value == "":
-        value = file_value
-
+    """Environment > file > default. Empty strings count as unset."""
+    value = os.environ.get(env_key) or file_value
     if value is None or value == "":
         value = default
-
-    if cast is not None and value is not None:
-        return cast(value)
-
-    return value
+    return cast(value) if cast is not None and value is not None else value
 
 
-def path(value: Any) -> Path:
-    """
-    Explicit Path cast.
-    """
+def resolve[T](
+    data: dict[str, Any],
+    section: str,
+    defaults: dict[str, T],
+    cast: Callable[[Any], T] | None = None,
+) -> dict[str, T]:
+    """Resolve a whole section: PKIT_<SECTION>_<KEY> > [section] key > default."""
+    values = data.get(section, {})
+    return {
+        key: pick(f"PKIT_{section.upper()}_{key.upper()}", values.get(key), default, cast)
+        for key, default in defaults.items()
+    }
+
+
+def as_path(value: Any) -> Path:
     return Path(str(value)).expanduser()
 
 
 def as_bool(value: Any) -> bool:
-    """
-    Explicit bool cast.
-    """
-    return str(value).lower() in {"1", "true", "yes", "on"}
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
