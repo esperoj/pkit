@@ -4,8 +4,6 @@ The inverse of restore. Link tables are not archived separately — links live
 inside their parent rows (e.g. author_ids) and db.put rebuilds the link tables.
 """
 
-from __future__ import annotations
-
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -27,9 +25,12 @@ def archive(
     Rows are sorted by id, so unchanged data produces byte-identical files
     (clean git diffs).
     """
-    repo = as_path(repo_path or config.load().repo_path)
-    repo.mkdir(parents=True, exist_ok=True)
+    cfg = config.load()
+    repo = as_path(repo_path or cfg.repo_path)
+    db_path = db_path or cfg.db_path
     count = 0
+
+    repo.mkdir(parents=True, exist_ok=True)
     with db.session(db_path) as conn:
         for cls in stored_models():
             rows = [asdict(r) for r in db.find(conn, cls)]
