@@ -36,16 +36,37 @@ def pick(
     return cast(value) if cast is not None and value is not None else value
 
 
-def resolve[T](
-    data: dict[str, Any],
-    section: str,
-    defaults: dict[str, T],
-    cast: Callable[[Any], T] | None = None,
-) -> dict[str, T]:
-    """Resolve a whole section: PKIT_<SECTION>_<KEY> > [section] key > default."""
+def _cast_for(default: Any) -> Callable[[Any], Any] | None:
+    """Infer the cast from the default's type (click/environs convention).
+
+    bool is checked before int (bool subclasses int); Path uses isinstance so
+    PosixPath / WindowsPath defaults work too.
+    """
+    if isinstance(default, bool):
+        return as_bool
+    if isinstance(default, Path):
+        return as_path
+    if isinstance(default, int):
+        return int
+    if isinstance(default, float):
+        return float
+    return None  # str (and anything else): use the value as-is
+
+
+def resolve[T](data: dict[str, Any], section: str, defaults: dict[str, T]) -> dict[str, T]:
+    """Resolve a whole section: PKIT_<SECTION>_<KEY> > [section] key > default.
+
+    The cast is inferred per key from the default's type, so one section can
+    mix Path, bool, int, float and str.
+    """
     values = data.get(section, {})
     return {
-        key: pick(f"PKIT_{section.upper()}_{key.upper()}", values.get(key), default, cast)
+        key: pick(
+            f"PKIT_{section.upper()}_{key.upper()}",
+            values.get(key),
+            default,
+            _cast_for(default),
+        )
         for key, default in defaults.items()
     }
 

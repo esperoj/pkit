@@ -2,21 +2,25 @@
 
 Every function takes a connection first, so this module can later be split into
 sql / db / read / write / check without changing a single call site.
+
+Input rule: lenient at the edge (Record or mapping in, str | Path | None for
+paths), strict inside, one output type. In this module `str` always means a
+record id — never a JSON payload.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from pkit.meta import config as meta_config
-from pkit.meta.models import RECORD_TYPES, Record, new_id
-from pkit.meta.serialize import from_json
+from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models
+from pkit.meta.serialize import from_dict, from_json
 
 __all__ = [
     "connect",
@@ -32,7 +36,7 @@ __all__ = [
 ]
 
 
-# --- sql helpers (future: pkit/meta/sql.py) --------------------------------
+# --- sql helpers (future: pkit/meta/sql.py) ----------------------------------
 
 
 def _q(name: str) -> str:
@@ -40,7 +44,12 @@ def _q(name: str) -> str:
 
 
 def _models() -> tuple[type[Record], ...]:
-    return tuple(cls for cls in RECORD_TYPES.values() if cls.table)
+    return stored_models()
+
+
+def _coerce(record: Record | Mapping[str, Any]) -> Record:
+    """One parse path for lenient input: mappings go through from_dict."""
+    return record if isinstance(record, Record) else from_dict(dict(record))
 
 
 def _normalize(record: Record) -> Record:
@@ -76,7 +85,7 @@ def _values(record: Record, cls: type[Record]) -> list[Any]:
     return values
 
 
-# --- connection (future: pkit/meta/db.py) ----------------------------------
+# --- connection (future: pkit/meta/db.py) ------------------------------------
 
 
 def connect(path: str | Path | None = None) -> sqlite3.Connection:
@@ -92,7 +101,7 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
 @contextmanager
 def session(
     path: str | Path | None = None, *, migrations_dir: str | Path | None = None
-) -> Iterator[sqlite3.Connection]:
+) -> Generator[sqlite3.Connection]:
     """The one entry point: connect, migrate, commit (or roll back), close."""
     conn = connect(path)
     try:
@@ -107,7 +116,10 @@ def session(
 
 
 def migrate(conn: sqlite3.Connection, directory: str | Path | None = None) -> None:
-    """Apply each *.sql once. Files must not contain BEGIN/COMMIT."""
+    """Apply each .sql once, atomically with its _migrations row.
+
+    Files must not contain BEGIN/COMMIT and must end statements with ';'.
+    """
     directory = Path(
         directory if directory is not None else meta_config.load().migrations_dir
     ).expanduser()
@@ -123,17 +135,25 @@ def migrate(conn: sqlite3.Connection, directory: str | Path | None = None) -> No
     for file_path in sorted(directory.glob("*.sql")):
         if file_path.name in applied:
             continue
-        conn.executescript("BEGIN;\n" + file_path.read_text(encoding="utf-8") + "\nCOMMIT;")
-        conn.execute("INSERT INTO _migrations(name) VALUES (?)", (file_path.name,))
-        conn.commit()
+        # Schema change and bookkeeping row commit together: no crash window
+        # where a migration is applied but unrecorded.
+        name = file_path.name.replace("'", "''")
+        conn.executescript(
+            "BEGIN;\n"
+            + file_path.read_text(encoding="utf-8")
+            + f"\nINSERT INTO _migrations(name) VALUES ('{name}');\nCOMMIT;"
+        )
 
 
-# --- write (future: pkit/meta/write.py) ------------------------------------
+# --- write (future: pkit/meta/write.py) --------------------------------------
 
 
-def put(conn: sqlite3.Connection, record: Record) -> Record:
-    """Insert or update by id, then re-sync link rows."""
-    record = _normalize(record)
+def put(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) -> Record:
+    """Insert or update by id, then re-sync link rows.
+
+    Accepts a Record or a mapping (parsed via from_dict); always returns Record.
+    """
+    record = _normalize(_coerce(record))
     cls = type(record)
     cols = ["id", "slug", *cls.scalar_fields, *cls.json_fields]
     conn.execute(
@@ -144,7 +164,8 @@ def put(conn: sqlite3.Connection, record: Record) -> Record:
     )
     for link in cls.links:
         conn.execute(
-            f"DELETE FROM {_q(link.table)} WHERE {_q(link.parent_column)} = ?", (record.id,)
+            f"DELETE FROM {_q(link.table)} WHERE {_q(link.parent_column)} = ?",
+            (record.id,),
         )
         conn.executemany(
             f"INSERT OR IGNORE INTO {_q(link.table)} "
@@ -154,16 +175,22 @@ def put(conn: sqlite3.Connection, record: Record) -> Record:
     return record
 
 
-def get_or_create(conn: sqlite3.Connection, record: Record) -> Record:
-    """Return the stored record if its id exists, otherwise insert this one."""
-    record = _normalize(record)
+def get_or_create(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) -> Record:
+    """Return the stored record if its id exists in this type's table, else insert.
+
+    One query; own-table semantics preserved (a cross-type id collision still
+    inserts, and validate() will flag it).
+    """
+    record = _normalize(_coerce(record))
+    cls = type(record)
     row = conn.execute(
-        f"SELECT 1 FROM {_q(type(record).table)} WHERE id = ?", (record.id,)
+        f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
+        (record.id,),
     ).fetchone()
-    return (get(conn, record.id) or record) if row is not None else put(conn, record)
+    return from_json(row["payload"]) if row is not None else put(conn, record)
 
 
-# --- read (future: pkit/meta/read.py) --------------------------------------
+# --- read (future: pkit/meta/read.py) ----------------------------------------
 
 
 def get(conn: sqlite3.Connection, record_id: str) -> Record | None:
@@ -180,13 +207,25 @@ def get(conn: sqlite3.Connection, record_id: str) -> Record | None:
 
 def find(
     conn: sqlite3.Connection,
-    record_type: str | None = None,
+    record_type: str | type[Record] | None = None,
     *,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[Record]:
-    """All records of a type (or all types), newest first."""
+    """All records of a type (or all types), newest first.
+
+    record_type accepts a type name ("note") or the class (Note).
+    Unknown types raise ValueError listing the known types.
+    """
+    if isinstance(record_type, type):
+        if not issubclass(record_type, Record):
+            raise TypeError(f"not a Record class: {record_type!r}")
+        record_type = record_type.type
+    if record_type is not None and record_type not in RECORD_TYPES:
+        known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
+        raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
     models = (RECORD_TYPES[record_type],) if record_type is not None else _models()
+    models = tuple(cls for cls in models if cls.table)
     if not models:
         return []
     union = " UNION ALL ".join(
@@ -201,10 +240,17 @@ def find(
 
 
 def exists(conn: sqlite3.Connection, record_id: str) -> bool:
-    return get(conn, record_id) is not None
+    """Cheap presence check: no payload build, no JSON parse."""
+    for cls in _models():
+        row = conn.execute(
+            f"SELECT 1 FROM {_q(cls.table)} WHERE id = ? LIMIT 1", (record_id,)
+        ).fetchone()
+        if row is not None:
+            return True
+    return False
 
 
-# --- delete / check (future: pkit/meta/check.py) ---------------------------
+# --- delete / check (future: pkit/meta/check.py) -----------------------------
 
 
 def delete(conn: sqlite3.Connection, record_id: str) -> bool:

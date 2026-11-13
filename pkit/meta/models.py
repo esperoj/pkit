@@ -4,7 +4,16 @@ from dataclasses import dataclass, field, fields
 from typing import Any, ClassVar, Literal, dataclass_transform
 from uuid import uuid4
 
-__all__ = ["RECORD_TYPES", "Book", "Link", "Person", "Record", "new_id", "record_model"]
+__all__ = [
+    "RECORD_TYPES",
+    "Book",
+    "Link",
+    "Person",
+    "Record",
+    "new_id",
+    "record_model",
+    "stored_models",
+]
 
 
 def new_id() -> str:
@@ -25,19 +34,32 @@ class Link:
 RECORD_TYPES: dict[str, type[Record]] = {}
 
 
+def stored_models() -> tuple[type[Record], ...]:
+    """The one discovery point: registered classes that own a SQL table.
+
+    Order = definition order. Link tables are not listed: they are derived
+    data, rebuilt by db.put from the parent rows' link keys.
+    """
+    return tuple(cls for cls in RECORD_TYPES.values() if cls.table)
+
+
 @dataclass_transform(kw_only_default=True, frozen_default=True, field_specifiers=(field,))
 def record_model(cls):
     """Freeze the class, derive its column layout, register its type.
 
     list/dict defaults -> JSON text columns, link keys -> own table, rest -> scalar.
+    The type name is the default of `type: Literal["..."] = "..."`; reading the
+    field default (not cls.type) is required because slots=True turns class
+    attribute access into a slot descriptor.
     """
     cls = dataclass(cls, frozen=True, slots=True, kw_only=True)
     skip = {"id", "type", "slug"} | {link.key for link in cls.links}
     fs = [f for f in fields(cls) if f.name not in skip]
     cls.json_fields = tuple(f.name for f in fs if f.default_factory in (list, dict))
     cls.scalar_fields = tuple(f.name for f in fs if f.name not in cls.json_fields)
-    if cls.type:
-        RECORD_TYPES[cls.type] = cls
+    type_name = cls.__dataclass_fields__["type"].default
+    if isinstance(type_name, str) and type_name:
+        RECORD_TYPES[type_name] = cls
     return cls
 
 
@@ -59,7 +81,7 @@ class Record:
 
 @record_model
 class Book(Record):
-    type: Literal[str] = "book"
+    type: Literal["book"] = "book"
     table: ClassVar[str] = "books"
     links: ClassVar[tuple[Link, ...]] = (
         Link("author_ids", "book_authors", "book_id", "person_id", "persons"),
@@ -75,7 +97,7 @@ class Book(Record):
 
 @record_model
 class Person(Record):
-    type: Literal[str] = "person"
+    type: Literal["person"] = "person"
     table: ClassVar[str] = "persons"
 
     name: str = ""

@@ -22,7 +22,7 @@ class MetaConfig:
 
 def load(path: str | Path | None = None) -> MetaConfig:
     data = config.load(path)
-    data_dir = config.resolve(data, "core", {"data_dir": DATA_DIR}, config.path)["data_dir"]
+    data_dir = config.resolve(data, "core", {"data_dir": DATA_DIR})["data_dir"]
     return MetaConfig(
         **config.resolve(
             data,
@@ -32,6 +32,5 @@ def load(path: str | Path | None = None) -> MetaConfig:
                 "repo_path": data_dir / "records",
                 "migrations_dir": MIGRATIONS_DIR,
             },
-            config.as_path,
         )
     )
