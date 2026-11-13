@@ -12,6 +12,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Self
+from urllib.parse import urlencode
 
 import requests
 
@@ -26,6 +27,8 @@ QUEUE_MIN_AVAILABLE = 1
 QUEUE_POLL_INTERVAL = 10.0
 JOB_POLL_INTERVAL = 15.0
 SUBMIT_SETTLE_TIME = 1.0
+
+CDX_FIELDS = "original,timestamp,digest,statuscode,mimetype"
 
 
 class WaybackError(Exception):
@@ -76,17 +79,23 @@ class SaveResult:
     job_id: str
 
 
+@dataclass(frozen=True)
+class CdxCapture:
+    """One CDX row. digest is base32 SHA1 of the captured payload."""
+
+    original: str
+    timestamp: str
+    digest: str
+    statuscode: str
+    mimetype: str
+
+
 class WaybackClient:
     """Client for Wayback Machine APIs.
 
     This client is intentionally synchronous and simple. It can later grow
-    additional methods such as:
-
-    - cdx_snapshots()
-    - latest_snapshot()
-    - digest()
-
-    while reusing authentication, proxy configuration, timeout, and session.
+    additional methods such as latest_snapshot() or digest() while reusing
+    authentication, proxy configuration, timeout, and session.
     """
 
     def __init__(
@@ -103,10 +112,8 @@ class WaybackClient:
         self.proxy_prefix = proxy_prefix or ""
         self.lock_file = DEFAULT_LOCK_FILE if lock_file is None else lock_file
         self.timeout = timeout
-
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/json"})
-
         if self.api_key and self.api_secret:
             self._session.headers["Authorization"] = f"LOW {self.api_key}:{self.api_secret}"
 
@@ -135,7 +142,6 @@ class WaybackClient:
         """Perform an HTTP request and parse JSON when possible."""
         url = self._endpoint(path)
         request_timeout = self.timeout if timeout is None else timeout
-
         try:
             response = self._session.request(
                 method,
@@ -146,20 +152,14 @@ class WaybackClient:
             response.raise_for_status()
         except requests.HTTPError as exc:
             response = exc.response
-
             if response is None:
                 raise WaybackError(str(exc)) from exc
-
             message = f"HTTP {response.status_code}: {response.text}"
-
             if response.status_code in {401, 403}:
                 raise AuthError(message) from exc
-
             if response.status_code == 429:
                 raise RateLimitError(message) from exc
-
             raise WaybackError(message) from exc
-
         except requests.RequestException as exc:
             raise WaybackError(str(exc)) from exc
 
@@ -167,7 +167,6 @@ class WaybackClient:
             payload = response.json()
         except ValueError:
             return {"raw_response": response.text}
-
         return payload if isinstance(payload, dict) else {"data": payload}
 
     @contextmanager
@@ -176,7 +175,6 @@ class WaybackClient:
         if not self.lock_file:
             yield
             return
-
         with open(self.lock_file, "a", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
@@ -187,65 +185,51 @@ class WaybackClient:
     def _wait_for_availability(self) -> None:
         """Wait until the SPN2 queue appears to have enough capacity."""
         deadline = time.monotonic() + QUEUE_WAIT_TIMEOUT
-
         while True:
             if time.monotonic() >= deadline:
                 raise JobTimeoutError("Timeout waiting for SPN2 queue availability.")
-
             try:
                 payload = self._request("GET", f"/save/status/user?_t={int(time.time())}")
                 available = payload.get("available", 0)
-
                 try:
                     available = int(available)
                 except (TypeError, ValueError):
                     available = 0
-
                 if available >= QUEUE_MIN_AVAILABLE:
                     return
             except WaybackError:
                 # If the availability endpoint is unavailable or unauthorized,
                 # proceed and let the actual save endpoint return the real error.
                 return
-
             time.sleep(QUEUE_POLL_INTERVAL)
 
     def _submit_save_job(self, url: str, opts: SaveOptions) -> str:
         """Submit an SPN2 save job under the submission lock."""
         with self._locked():
             self._wait_for_availability()
-
             payload = {"url": url, **opts.to_form_dict()}
             response = self._request("POST", "/save", data=payload)
-
             job_id = response.get("job_id")
             if not job_id:
                 raise WaybackError(f"Missing job_id in SPN2 response: {response}")
-
             time.sleep(SUBMIT_SETTLE_TIME)
-
             return str(job_id)
 
     def _poll_save_job(self, url: str, job_id: str) -> str:
         """Poll an SPN2 save job until success, failure, or timeout."""
         deadline = time.monotonic() + JOB_POLL_TIMEOUT
-
         while True:
             if time.monotonic() >= deadline:
                 raise JobTimeoutError(f"Timeout polling job {job_id}.")
-
             response = self._request("GET", f"/save/status/{job_id}")
             status = response.get("status")
-
             if status == "success":
                 timestamp = response.get("timestamp", "")
                 original_url = response.get("original_url", url)
                 return f"{BASE_URL}/web/{timestamp}id_/{original_url}"
-
             if status == "pending":
                 time.sleep(JOB_POLL_INTERVAL)
                 continue
-
             detail = response.get("error") or response.get("message") or status or "unknown status"
             raise JobFailedError(f"SPN2 job {job_id} failed: {detail!r}")
 
@@ -257,27 +241,45 @@ class WaybackClient:
     ) -> SaveResult:
         """Save one URL using the Wayback Machine SPN2 API."""
         opts = opts or SaveOptions()
-
         if not url:
             raise InputError("No target URL provided.")
-
         job_id = self._submit_save_job(url, opts)
         archive_url = self._poll_save_job(url, job_id)
-
         return SaveResult(
             url=url,
             archive_url=archive_url,
             job_id=job_id,
         )
 
+    def cdx(
+        self,
+        url: str,
+        *,
+        match_type: str = "exact",
+        limit: int | None = None,
+    ) -> list[CdxCapture]:
+        """List captures from the CDX API, oldest first.
 
-# Future methods can live here and reuse the same session/auth/proxy:
-#
-# def cdx_snapshots(self, url: str) -> list[CdxSnapshot]:
-#     ...
-#
-# def latest_snapshot(self, url: str) -> CdxSnapshot | None:
-#     ...
-#
-# def digest(self, url: str) -> DigestResult:
-#     ...
+        match_type="prefix" lists every capture under a URL namespace, which
+        is the closest thing Wayback has to a folder listing. No auth needed.
+        """
+        if not url:
+            raise InputError("No target URL provided.")
+        params = {"url": url, "matchType": match_type, "output": "json", "fl": CDX_FIELDS}
+        if limit is not None:
+            params["limit"] = str(limit)
+        payload = self._request("GET", f"/cdx/search/cdx?{urlencode(params)}")
+        captures: list[CdxCapture] = []
+        for row in payload.get("data") or []:
+            if not isinstance(row, list) or len(row) < 5 or row[0] == "original":
+                continue
+            captures.append(
+                CdxCapture(
+                    original=str(row[0]),
+                    timestamp=str(row[1]),
+                    digest=str(row[2]),
+                    statuscode=str(row[3]),
+                    mimetype=str(row[4]),
+                )
+            )
+        return captures

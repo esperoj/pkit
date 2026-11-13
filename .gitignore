@@ -9,10 +9,10 @@ web_modules/
 *.tgz
 .yarn-integrity
 .pnpm-store
-.next
-out
+.next/
+out/
 .nuxt
-dist
+dist/
 .output
 .vuepress/dist
 .temp
@@ -20,7 +20,7 @@ dist
 .docusaurus
 .serverless/
 .fusebox/
-.dynamodb/
+.dynamodb.local
 .firebase/
 .cache
 .parcel-cache
@@ -72,18 +72,24 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# pkit source is not a build artifact
+!pkit/lib/
+
 # PyInstaller / Py2exe
 *.manifest
 *.spec
 
-# Installer logs & Test/Coverage
+# Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Unit test / coverage reports
 htmlcov/
 .tox/
 .nox/
 .coverage
 .coverage.*
+.cache
 nosetests.xml
 coverage.xml
 *.cover
@@ -103,9 +109,8 @@ venv.bak/
 # Emacs
 *~
 \#*\#
-.#*
-.emacs.desktop
-.emacs.desktop.lock
+/.emacs.desktop
+/.emacs.desktop.lock
 *.elc
 auto-save-list
 tramp

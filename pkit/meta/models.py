@@ -7,6 +7,7 @@ from uuid import uuid4
 __all__ = [
     "RECORD_TYPES",
     "Book",
+    "File",
     "Link",
     "Person",
     "Record",
@@ -106,3 +107,20 @@ class Person(Record):
     death_date: str = ""
     country: str = ""
     occupations: list[str] = field(default_factory=list)
+
+
+@record_model
+class File(Record):
+    """One content-addressed file.
+
+    id is "sha256:<hex>" so re-adding the same bytes is the same row.
+    identifiers carry alternate hashes ("sha1:...", "md5:...") used to match
+    remotes. locations are remote copies only — local presence lives in the
+    filesystem, never here.
+    """
+
+    type: Literal["file"] = "file"
+    table: ClassVar[str] = "files"
+
+    size: int = 0
+    locations: list[str] = field(default_factory=list)
