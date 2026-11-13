@@ -1,6 +1,6 @@
-# pkit — AI Engineering Guide
+# pkit — Engineering Guide
 
-BusyBox-style personal CLI toolkit. First tool: Wayback Machine save utility.
+BusyBox-style personal CLI toolkit.
 Values: durability, simplicity, borrowed standards over novelty.
 
 ---
@@ -8,15 +8,11 @@ Values: durability, simplicity, borrowed standards over novelty.
 ## 1. Philosophy
 
 **Borrow standards, never invent.** Unix CLI conventions, Python SDK conventions
-(exceptions for failure, return values for success), Click, pytest, PEP 8/257,
+(exceptions for failure, return values for success), pytest, PEP 8/257,
 stdlib first. No custom error taxonomies, no bespoke JSON error metadata,
 no hint systems.
 
-**80/20 pragmatism.** Solve the real problem cleanly. No plugin systems, no
-config files nobody requested, no retry engines, no DI, no ABCs for one
-implementation, no logging frameworks, no metrics, no machine-readable error
-classification in JSON, no excessive option flags. If not needed today, no
-scaffolding.
+**80/20 pragmatism.** Solve the real problem cleanly. No plugin systems, no retry engines, no DI, no logging frameworks, no metrics, no machine-readable error classification in JSON, no excessive option flags.
 
 **Minimal simplicity.** Best code is code that doesn't exist. Functions over
 classes when stateless. Dataclasses over custom objects. Explicit over magic.
@@ -37,26 +33,43 @@ structure, internal DSLs, complicated state machines.
 
 ## 2. Architecture
 
+```
 pkit/
 ├── __init__.py
-├── cli.py              # BusyBox top-level CLI
-├── version.py          # lazy version resolution
-├── common/
-│   ├── __init__.py
-│   └── cli_helpers.py  # generic CLI helpers ONLY
+├── __main__.py          # python -m pkit
+├── cli.py               # BusyBox dispatcher (hand-rolled, no argparse needed)
+├── version.py           # lazy version resolution
+├── lib/                 # shared, tool-agnostic (the ONLY shared home)
+│   ├── cli.py           # exit codes, stdin, emit, fail, run_tool
+│   ├── http.py          # HttpClient: one session, one timeout, HttpError
+│   └── shell.py          # run external commands
+├── meta/
+│   ├── __main__.py      # python -m pkit.meta
+│   ├── cli.py           # dump / load / validate
+│   ├── config.py, db.py, models.py, serialize.py, sync.py
+│   └── migrations/      # SQL migrations
+├── archive/
+│   ├── __main__.py      # python -m pkit.archive
+│   ├── cli.py           # add/fix/copy/match/verify/drop/get/forget/...
+│   └── cas.py, records.py, remote.py, rclone.py, wayback.py, errors.py
 └── wayback/
-    ├── __init__.py
-    ├── cli.py          # Wayback CLI (thin)
-    └── client.py       # Wayback SDK client
+    ├── __main__.py      # python -m pkit.wayback
+    ├── cli.py           # save (thin, argparse)
+    └── client.py        # Wayback SDK client
+```
+
+Every tool has three entry points (console script `pkit-<tool>`, BusyBox
+subcommand `pkit <tool>`, module `python -m pkit.<tool>`) — one `main()` in
+each `cli.py`, so all three stay in lockstep by construction.
 
 ### Boundaries
 
 | Rule | |
 |---|---|
-| `client.py` | Must NOT import Click, print, or know stdout/stderr/exit codes |
-| `cli_helpers.py` | Must NOT contain Wayback-specific logic |
+| `client.py` / SDK modules | Must NOT print, or know stdout/stderr/exit codes |
+| `lib/cli.py` | Generic CLI plumbing ONLY; no tool-specific logic |
+| `lib/http.py`, `lib/shell.py` | Tool-agnostic; callers map errors to their own types |
 | Wayback coercion | Belongs in `pkit/wayback/cli.py` |
-| Shared CLI helpers | Belong in `pkit/common/cli_helpers.py` |
 | Version | Lives only in `pyproject.toml`; use `pkit.version.get_version()` |
 | Version bumps | Via `make bump VERSION=x.y.z` / `make release VERSION=x.y.z`; never by hand |
 
@@ -64,13 +77,15 @@ pkit/
 
 - Success returns structured dataclasses.
 - Failure raises typed exceptions — never `result.error` strings.
-- HTTP via `requests.Session`. Clients are context managers and closeable.
+- HTTP via `pkit.lib.http.HttpClient`; external commands via `pkit.lib.shell.run`.
+  Clients are context managers and closeable.
 - No printing, no CLI concerns, no exit calls.
 
 ### CLI layer (thin)
 
+stdlib argparse; `main(argv) -> int` built on `pkit.lib.cli.run_tool`.
 Parse args → read stdin if appropriate → call SDK → print success to stdout →
-print errors to stderr → exit with correct code. No deep business logic.
+print errors to stderr → return the exit code. No deep business logic.
 
 ### Command design
 
@@ -170,7 +185,7 @@ implementation-detail names.
 
 ## 6. Dependencies
 
-Prefer: stdlib, Click (CLI), requests (HTTP), pytest, requests-mock.
+Prefer: stdlib (argparse for CLIs), requests (HTTP), pytest, requests-mock.
 Do NOT add deps for: logging, configuration, validation, retry, schema
 enforcement, CLI generation, DI, rich output, progress bars, metrics.
 A dependency is accepted only if it removes significant code **and** is stable.
@@ -180,7 +195,8 @@ A dependency is accepted only if it removes significant code **and** is stable.
 ## 7. Testing
 
 pytest. Fixtures for shared setup. Small focused unit tests. A few integration
-tests. requests-mock for HTTP. Click CliRunner for CLI.
+tests. requests-mock for HTTP. CLI tests call `main([...])` directly with
+capsys and faked stdin (`run_cli` in conftest.py).
 
 **Test:** stdin behavior, option coercion, CLI success output, CLI exit codes,
 stderr messages, SDK exception mapping, SDK success result shape, HTTP error

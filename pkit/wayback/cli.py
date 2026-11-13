@@ -1,33 +1,33 @@
-"""wayback-machine CLI.
+"""Wayback Machine CLI (argparse, stdlib only).
 
-This is a Click group so future commands can be added cleanly:
+    pkit wayback save URL          # save one URL via SPN2
+    pkit-wayback save URL          # same tool, standalone entry
+    python -m pkit.wayback save URL
 
-    wayback save URL
-    wayback cdx URL
-    wayback digest URL
+Tool options come before the command; save options after it:
 
-This CLI is also mountable inside a larger BusyBox-style CLI:
-
-    perma-tools wayback save URL
+    pkit wayback --key K --secret S save --json URL
 """
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
+from collections.abc import Sequence
 from typing import Any
 
-import click
-
-from ..common.cli_helpers import (
+from pkit.lib.cli import (
     EXIT_ERROR,
+    EXIT_OK,
     EXIT_TEMPFAIL,
     EXIT_USAGE,
     emit_result,
     fail,
     read_stdin_payload,
+    run_tool,
 )
-from ..version import get_version
-from .client import (
+from pkit.version import get_version
+from pkit.wayback.client import (
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
@@ -39,6 +39,10 @@ from .client import (
     WaybackClient,
     WaybackError,
 )
+
+__all__ = ["DESCRIPTION", "main"]
+
+DESCRIPTION = "Save URLs to the Wayback Machine (SPN2)."
 
 _OPTION_FIELDS = {field.name for field in dataclasses.fields(SaveOptions)}
 _FALSE_STRINGS = {"", "0", "false", "no", "off"}
@@ -87,157 +91,108 @@ def _exit_code_for_error(exc: Exception) -> int:
     return EXIT_ERROR
 
 
-@click.group(
-    name="wayback",
-    no_args_is_help=True,
-    context_settings={"help_option_names": ["-h", "--help"]},
-)
-@click.version_option(version=get_version())
-@click.option(
-    "--key",
-    "--api-key",
-    "api_key",
-    envvar=ENV_ACCESS_KEY,
-    help=f"Internet Archive access key. [{ENV_ACCESS_KEY}]",
-)
-@click.option(
-    "--secret",
-    "--api-secret",
-    "api_secret",
-    envvar=ENV_SECRET_KEY,
-    help=f"Internet Archive secret key. [{ENV_SECRET_KEY}]",
-)
-@click.option(
-    "--proxy",
-    "proxy_prefix",
-    help="Optional proxy prefix placed before Wayback Machine URLs.",
-)
-@click.option(
-    "--lock-file",
-    type=click.Path(dir_okay=False),
-    default=DEFAULT_LOCK_FILE,
-    show_default=True,
-    help="Lock file used to serialize SPN2 submissions. Empty string disables locking.",
-)
-@click.option(
-    "--timeout",
-    type=float,
-    default=120.0,
-    show_default=True,
-    help="HTTP timeout in seconds.",
-)
-@click.pass_context
-def cli(
-    ctx: click.Context,
-    api_key: str | None,
-    api_secret: str | None,
-    proxy_prefix: str | None,
-    lock_file: str,
-    timeout: float,
-) -> None:
-    """Wayback Machine commands."""
-    ctx.ensure_object(dict)
-    client = WaybackClient(
-        api_key=api_key,
-        api_secret=api_secret,
-        proxy_prefix=proxy_prefix,
-        lock_file=lock_file,
-        timeout=timeout,
+def _add_flag(parser: argparse.ArgumentParser, name: str, help_text: str) -> None:
+    """Add one SaveOptions flag with its --no- counterpart (stdlib pattern)."""
+    parser.add_argument(
+        f"--{name.replace('_', '-')}",
+        dest=name,
+        action=argparse.BooleanOptionalAction,
+        default=getattr(_DEFAULTS, name),
+        help=help_text,
     )
-    # Namespace the client so it does not collide with other tools in a
-    # BusyBox-style super CLI.
-    ctx.obj["wayback.client"] = client
-    ctx.call_on_close(client.close)
 
 
-@cli.command(name="save")
-@click.argument("url", required=False)
-@click.option(
-    "--json",
-    "json_output",
-    is_flag=True,
-    help="Output JSON. If URL is omitted or '-', read JSON from stdin.",
-)
-@click.option(
-    "--capture-all",
-    is_flag=True,
-    default=_DEFAULTS.capture_all,
-    help="Capture all embedded page resources.",
-)
-@click.option(
-    "--capture-outlinks",
-    is_flag=True,
-    default=_DEFAULTS.capture_outlinks,
-    help="Capture outgoing links.",
-)
-@click.option(
-    "--email/--no-email",
-    "email_result",
-    default=_DEFAULTS.email_result,
-    show_default=True,
-    help="Send an email notification when the job completes.",
-)
-@click.option(
-    "--force-get/--no-force-get",
-    "force_get",
-    default=_DEFAULTS.force_get,
-    show_default=True,
-    help="Force a GET request instead of HEAD.",
-)
-@click.option(
-    "--skip-first/--no-skip-first",
-    "skip_first_archive",
-    default=_DEFAULTS.skip_first_archive,
-    show_default=True,
-    help="Skip archiving if the URL was recently saved.",
-)
-@click.pass_context
-def save(
-    ctx: click.Context,
-    url: str | None,
-    json_output: bool,
-    capture_all: bool,
-    capture_outlinks: bool,
-    email_result: bool,
-    force_get: bool,
-    skip_first_archive: bool,
-) -> None:
-    """Save one URL to the Wayback Machine using SPN2."""
-    client: WaybackClient = ctx.obj["wayback.client"]
-    if url == "-":
-        url = None
-    payload: dict[str, Any] = {}
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="pkit wayback", description=DESCRIPTION)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {get_version()}")
+    parser.add_argument(
+        "--key",
+        "--api-key",
+        dest="api_key",
+        default=None,
+        help=f"Internet Archive access key (env {ENV_ACCESS_KEY}).",
+    )
+    parser.add_argument(
+        "--secret",
+        "--api-secret",
+        dest="api_secret",
+        default=None,
+        help=f"Internet Archive secret key (env {ENV_SECRET_KEY}).",
+    )
+    parser.add_argument(
+        "--proxy",
+        dest="proxy_prefix",
+        default=None,
+        help="Proxy prefix placed before Wayback Machine URLs.",
+    )
+    parser.add_argument(
+        "--lock-file",
+        dest="lock_file",
+        default=DEFAULT_LOCK_FILE,
+        help=f"Lock file serializing SPN2 submissions; '' disables (default: {DEFAULT_LOCK_FILE}).",
+    )
+    parser.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=120.0,
+        help="HTTP timeout in seconds (default: 120).",
+    )
+    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    # Unix convention:
-    #   - If URL is provided, stdin is ignored.
-    #   - If URL is omitted or "-", read from stdin.
-    if url is None:
-        url, payload = read_stdin_payload(json_output, primary_key="url")
+    save = sub.add_parser("save", help="Save one URL to the Wayback Machine using SPN2.")
+    save.add_argument("url", nargs="?", default=None, help="Target URL; omit or '-' to read stdin.")
+    save.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Output JSON. If URL is omitted or '-', read JSON from stdin.",
+    )
+    _add_flag(save, "capture_all", "Capture all embedded page resources.")
+    _add_flag(save, "capture_outlinks", "Capture outgoing links.")
+    _add_flag(save, "email_result", "Send an email notification when the job completes.")
+    _add_flag(save, "force_get", "Force a GET request instead of HEAD.")
+    _add_flag(save, "skip_first_archive", "Skip archiving if the URL was recently saved.")
+    save.set_defaults(func=_save)
+    return parser
 
-    if not url:
-        fail("No target URL provided.", exit_code=EXIT_USAGE)
 
-    opts = _save_options_from_params(ctx.params, payload)
+def _save(args: argparse.Namespace) -> int:
+    client = WaybackClient(
+        api_key=args.api_key,
+        api_secret=args.api_secret,
+        proxy_prefix=args.proxy_prefix,
+        lock_file=args.lock_file,
+        timeout=args.timeout,
+    )
     try:
-        result = client.save_url(url, opts=opts)
-    except WaybackError as exc:
-        fail(str(exc), exit_code=_exit_code_for_error(exc))
-    else:
+        url = None if args.url == "-" else args.url
+        payload: dict[str, Any] = {}
+
+        # Unix convention:
+        #   - If URL is provided, stdin is ignored.
+        #   - If URL is omitted or "-", read from stdin.
+        if url is None:
+            url, payload = read_stdin_payload(args.json_output, primary_key="url")
+
+        if not url:
+            return fail("No target URL provided.", exit_code=EXIT_USAGE)
+
+        params = {name: getattr(args, name) for name in _OPTION_FIELDS}
+        opts = _save_options_from_params(params, payload)
+        try:
+            result = client.save_url(url, opts=opts)
+        except WaybackError as exc:
+            return fail(str(exc), exit_code=_exit_code_for_error(exc))
         emit_result(
             result,
-            json_output=json_output,
+            json_output=args.json_output,
             plain=lambda r: r.archive_url,
         )
+        return EXIT_OK
+    finally:
+        client.close()
 
 
-# Future commands can be added here:
-#
-# @cli.command(name="cdx")
-# @click.argument("url", required=True)
-# def cdx(url: str) -> None:
-#     ...
-#
-# @cli.command(name="digest")
-# @click.argument("url", required=True)
-# def digest(url: str) -> None:
-#     ...
+def main(argv: Sequence[str] | None = None) -> int:
+    return run_tool(_build_parser(), argv)

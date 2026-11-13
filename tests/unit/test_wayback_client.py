@@ -20,32 +20,44 @@ from pkit.wayback.client import (
 )
 
 
-def test_init_uses_env_credentials(monkeypatch):
+def test_init_uses_env_credentials(monkeypatch, requests_mock):
     monkeypatch.setenv(ENV_ACCESS_KEY, "env-key")
     monkeypatch.setenv(ENV_SECRET_KEY, "env-secret")
+    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
+
     client = WaybackClient(lock_file="")
-    assert client._session.headers["Authorization"] == "LOW env-key:env-secret"
+    client._request("GET", "/thing")
     client.close()
 
+    assert requests_mock.last_request.headers["Authorization"] == "LOW env-key:env-secret"
 
-def test_init_explicit_credentials_override_env(monkeypatch):
+
+def test_init_explicit_credentials_override_env(monkeypatch, requests_mock):
     monkeypatch.setenv(ENV_ACCESS_KEY, "old-key")
     monkeypatch.setenv(ENV_SECRET_KEY, "old-secret")
+    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
+
     client = WaybackClient(
         api_key="new-key",
         api_secret="new-secret",
         lock_file="",
     )
-    assert client._session.headers["Authorization"] == "LOW new-key:new-secret"
+    client._request("GET", "/thing")
     client.close()
 
+    assert requests_mock.last_request.headers["Authorization"] == "LOW new-key:new-secret"
 
-def test_init_no_auth_header_when_credentials_missing(monkeypatch):
+
+def test_init_no_auth_header_when_credentials_missing(monkeypatch, requests_mock):
     monkeypatch.delenv(ENV_ACCESS_KEY, raising=False)
     monkeypatch.delenv(ENV_SECRET_KEY, raising=False)
+    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
+
     client = WaybackClient(lock_file="")
-    assert "Authorization" not in client._session.headers
+    client._request("GET", "/thing")
     client.close()
+
+    assert "Authorization" not in requests_mock.last_request.headers
 
 
 def test_lock_file_none_uses_default():
@@ -60,18 +72,18 @@ def test_endpoint_applies_proxy():
     client.close()
 
 
-def test_close_closes_session(monkeypatch):
+def test_close_closes_http(monkeypatch):
     client = WaybackClient(lock_file="")
     called = []
-    monkeypatch.setattr(client._session, "close", lambda: called.append(True))
+    monkeypatch.setattr(client._http, "close", lambda: called.append(True))
     client.close()
     assert called == [True]
 
 
-def test_context_manager_closes_session(monkeypatch):
+def test_context_manager_closes_http(monkeypatch):
     called = []
     with WaybackClient(lock_file="") as client:
-        monkeypatch.setattr(client._session, "close", lambda: called.append(True))
+        monkeypatch.setattr(client._http, "close", lambda: called.append(True))
     assert called == [True]
 
 
@@ -118,7 +130,7 @@ def test_request_http_error_without_response(client, monkeypatch):
     def raise_http_error(method, url, **kwargs):
         raise requests.HTTPError("boom", response=None)
 
-    monkeypatch.setattr(client._session, "request", raise_http_error)
+    monkeypatch.setattr(client._http._session, "request", raise_http_error)
 
     with pytest.raises(WaybackError, match="boom"):
         client._request("GET", "/thing")

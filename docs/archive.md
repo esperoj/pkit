@@ -1,6 +1,6 @@
 # pkit archive
 
-Personal archive manager, inspired by git-annex. Library only.
+Personal archive manager, inspired by git-annex. A library and a thin CLI.
 
 ## Model
 
@@ -31,6 +31,28 @@ archive.verify(manga)  # report local + remote integrity
 archive.drop(manga)  # delete local copy after proving a remote
 archive.get(manga)  # fetch it back, verified
 ```
+
+## CLI
+
+```
+pkit archive add PATH...               # ingest: CAS, symlinks, records
+pkit archive fix PATH                  # re-point links, re-assert perms
+pkit archive copy PATH REMOTE          # transfer missing, register
+pkit archive match REMOTE              # register known content, no transfer
+pkit archive verify FILE [REMOTE...]   # report local + remote integrity
+pkit archive drop PATH                 # delete local copy once a remote is proven
+pkit archive get FILE [REMOTE]         # restore a verified copy
+pkit archive forget PATH               # delete records for dangling links
+pkit archive remove-location FILE LOCATION
+```
+
+Every command takes `--json` for structured output. Plain output is one
+summary line (plus data lines: checks for `verify`, missing paths for
+`fix`, registered locations for `copy`). `verify` prints
+`location<TAB>status` per check and exits 1 when any check is not `ok` —
+that is the alert a sweep looks for. The database comes from `[meta]`
+config; the CAS root is found by walking up to `.git` (override with
+`cas_dir=` in the library, or place a `.git` directory above the tree).
 
 ## Functions
 
@@ -106,11 +128,14 @@ does; `/sdcard` does not).
 ## Sync between machines
 
 ```python
-from pkit.meta.operations import dump, load
+from pkit.meta import sync
 
-dump.dump()  # records -> JSON repo (commit it)
-load.load()  # JSON repo -> records on the other machine
+sync.dump()  # records -> JSON repo (commit it)
+sync.load()  # JSON repo -> records on the other machine
 ```
+
+Or from the shell: `pkit meta dump` / `pkit meta load`
+(see docs/meta.md).
 
 The CAS is per-machine; the record repo is shared. Wayback locations can be
 rebuilt from CDX alone if the database is lost.

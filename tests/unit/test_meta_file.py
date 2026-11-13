@@ -4,9 +4,8 @@ import sqlite3
 
 import pytest
 
-from pkit.meta import db
+from pkit.meta import db, sync
 from pkit.meta.models import File
-from pkit.meta.operations import dump, load
 
 ID = "sha256:" + "a" * 64
 
@@ -35,9 +34,9 @@ def test_dump_load_round_trip(db_path, tmp_path):
     repo = tmp_path / "repo"
     with db.session(db_path) as conn:
         db.put(conn, File(id=ID, size=1, locations=["ia:item/a"]))
-    assert dump.dump(db_path, repo) >= 1
+    assert sync.dump(db_path, repo) >= 1
     other = tmp_path / "other.db"
-    assert load.load(other, repo) >= 1
+    assert sync.load(other, repo) >= 1
     with db.session(other) as conn:
         record = db.get(conn, ID)
     assert isinstance(record, File)

@@ -16,11 +16,16 @@ CHUNK_SIZE = 1024 * 1024
 
 
 class HttpError(Exception):
-    """HTTP failure. status_code is None when no response arrived."""
+    """HTTP failure. status_code is None when no response arrived.
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    body carries the response text so callers can surface a useful
+    diagnostic ("HTTP 401: Unauthorized") without re-fetching.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, body: str = "") -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.body = body
 
 
 class HttpClient:
@@ -48,14 +53,23 @@ class HttpClient:
         self.close()
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        """Perform one request and raise HttpError on transport/HTTP failure."""
+        """Perform one request and raise HttpError on transport/HTTP failure.
+
+        A `timeout` in kwargs overrides the session default for this call.
+        """
+        kwargs.setdefault("timeout", self.timeout)
         try:
-            response = self._session.request(method, url, timeout=self.timeout, **kwargs)
+            response = self._session.request(method, url, **kwargs)
             response.raise_for_status()
         except requests.HTTPError as exc:
             response = exc.response
-            code = response.status_code if response is not None else None
-            raise HttpError(f"HTTP {code}: {url}", status_code=code) from exc
+            if response is None:
+                raise HttpError(str(exc)) from exc
+            raise HttpError(
+                f"HTTP {response.status_code}: {url}",
+                status_code=response.status_code,
+                body=response.text,
+            ) from exc
         except requests.RequestException as exc:
             raise HttpError(str(exc)) from exc
         return response

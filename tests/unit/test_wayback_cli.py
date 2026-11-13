@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from pkit.common.cli_helpers import EXIT_ERROR, EXIT_TEMPFAIL, EXIT_USAGE
+from pkit.lib.cli import EXIT_ERROR, EXIT_TEMPFAIL, EXIT_USAGE
 from pkit.version import get_version
-from pkit.wayback.cli import cli
+from pkit.wayback.cli import main
 from pkit.wayback.client import (
     AuthError,
     InputError,
@@ -31,29 +31,33 @@ def success_result(url: str, opts=None) -> SaveResult:
     )
 
 
-def test_wayback_help(runner):
-    result = runner.invoke(cli, ["--help"])
-    assert result.exit_code == 0
-    assert "save" in result.stdout
+def test_wayback_help(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+
+    assert exc.value.code == 0
+    assert "save" in capsys.readouterr().out
 
 
-def test_wayback_no_args_is_help(runner):
-    result = runner.invoke(cli, [])
-    assert result.exit_code == EXIT_USAGE
-    assert "save" in (result.stdout + result.stderr)
+def test_wayback_no_args_is_help(capsys):
+    assert main([]) == EXIT_USAGE
+    assert "save" in capsys.readouterr().out
 
 
-def test_wayback_version(runner):
-    result = runner.invoke(cli, ["--version"])
-    assert result.exit_code == 0
-    assert get_version() in result.stdout
+def test_wayback_version(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+
+    assert exc.value.code == 0
+    assert get_version() in capsys.readouterr().out
 
 
-def test_save_plain_success(runner, patch_save_url):
+def test_save_plain_success(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
-    result = runner.invoke(cli, save_cmd("http://example.com"))
-    assert result.exit_code == 0, result.stderr
-    assert result.stdout.strip() == "http://archive"
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
+
+    assert code == 0, err
+    assert out.strip() == "http://archive"
     assert calls[0]["url"] == "http://example.com"
     opts = calls[0]["opts"]
     assert opts.capture_all is False
@@ -63,11 +67,12 @@ def test_save_plain_success(runner, patch_save_url):
     assert opts.skip_first_archive is True
 
 
-def test_save_json_success(runner, patch_save_url):
+def test_save_json_success(run_cli, patch_save_url):
     patch_save_url(success_result)
-    result = runner.invoke(cli, save_cmd("--json", "http://example.com"))
-    assert result.exit_code == 0, result.stderr
-    payload = json.loads(result.stdout)
+    code, out, err = run_cli(main, save_cmd("--json", "http://example.com"))
+
+    assert code == 0, err
+    payload = json.loads(out)
     assert payload == {
         "url": "http://example.com",
         "archive_url": "http://archive",
@@ -75,7 +80,7 @@ def test_save_json_success(runner, patch_save_url):
     }
 
 
-def test_save_flags_override_defaults(runner, patch_save_url):
+def test_save_flags_override_defaults(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
     args = save_cmd(
         "--capture-all",
@@ -85,8 +90,9 @@ def test_save_flags_override_defaults(runner, patch_save_url):
         "--no-skip-first",
         "http://example.com",
     )
-    result = runner.invoke(cli, args)
-    assert result.exit_code == 0, result.stderr
+    code, _out, err = run_cli(main, args)
+
+    assert code == 0, err
     opts = calls[0]["opts"]
     assert opts.capture_all is True
     assert opts.capture_outlinks is True
@@ -95,27 +101,25 @@ def test_save_flags_override_defaults(runner, patch_save_url):
     assert opts.skip_first_archive is False
 
 
-def test_save_no_url_plain(runner, patch_save_url):
+def test_save_no_url_plain(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
-    result = runner.invoke(cli, save_cmd(), input="")
-    assert result.exit_code == EXIT_USAGE
-    assert "No target URL provided." in result.stderr
-    assert result.stdout == ""
+    code, out, err = run_cli(main, save_cmd(), input="")
+
+    assert code == EXIT_USAGE
+    assert "No target URL provided." in err
+    assert out == ""
     assert calls == []
 
 
-def test_save_reads_plain_stdin_first_line(runner, patch_save_url):
+def test_save_reads_plain_stdin_first_line(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
-    result = runner.invoke(
-        cli,
-        save_cmd(),
-        input="http://stdin\nhttp://ignored\n",
-    )
-    assert result.exit_code == 0, result.stderr
+    code, _out, err = run_cli(main, save_cmd(), input="http://stdin\nhttp://ignored\n")
+
+    assert code == 0, err
     assert calls[0]["url"] == "http://stdin"
 
 
-def test_save_reads_json_object_from_stdin(runner, patch_save_url):
+def test_save_reads_json_object_from_stdin(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
     payload = {
         "url": "http://json",
@@ -123,50 +127,38 @@ def test_save_reads_json_object_from_stdin(runner, patch_save_url):
         "email_result": "off",
         "bogus": True,
     }
-    result = runner.invoke(
-        cli,
-        save_cmd("--json"),
-        input=json.dumps(payload),
-    )
-    assert result.exit_code == 0, result.stderr
+    code, out, err = run_cli(main, save_cmd("--json"), input=json.dumps(payload))
+
+    assert code == 0, err
     assert calls[0]["url"] == "http://json"
     opts = calls[0]["opts"]
     assert opts.capture_all is True
     assert opts.email_result is False
-    output = json.loads(result.stdout)
+    output = json.loads(out)
     assert output["url"] == "http://json"
 
 
-def test_save_reads_json_scalar_from_stdin(runner, patch_save_url):
+def test_save_reads_json_scalar_from_stdin(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
-    result = runner.invoke(
-        cli,
-        save_cmd("--json"),
-        input='"http://scalar"',
-    )
-    assert result.exit_code == 0, result.stderr
+    code, _out, err = run_cli(main, save_cmd("--json"), input='"http://scalar"')
+
+    assert code == 0, err
     assert calls[0]["url"] == "http://scalar"
 
 
-def test_save_invalid_json_stdin_is_treated_as_url(runner, patch_save_url):
+def test_save_invalid_json_stdin_is_treated_as_url(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
-    result = runner.invoke(
-        cli,
-        save_cmd("--json"),
-        input="http://raw",
-    )
-    assert result.exit_code == 0, result.stderr
+    code, _out, err = run_cli(main, save_cmd("--json"), input="http://raw")
+
+    assert code == 0, err
     assert calls[0]["url"] == "http://raw"
 
 
-def test_save_dash_reads_stdin(runner, patch_save_url):
+def test_save_dash_reads_stdin(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
-    result = runner.invoke(
-        cli,
-        save_cmd("-"),
-        input="http://dash\n",
-    )
-    assert result.exit_code == 0, result.stderr
+    code, _out, err = run_cli(main, save_cmd("-"), input="http://dash\n")
+
+    assert code == 0, err
     assert calls[0]["url"] == "http://dash"
 
 
@@ -182,7 +174,7 @@ def test_save_dash_reads_stdin(runner, patch_save_url):
     ],
 )
 def test_cli_error_exit_codes(
-    runner,
+    run_cli,
     patch_save_url,
     exc_class,
     message,
@@ -192,24 +184,26 @@ def test_cli_error_exit_codes(
         raise exc_class(message)
 
     patch_save_url(raise_error)
-    result = runner.invoke(cli, save_cmd("http://example.com"))
-    assert result.exit_code == expected_exit_code
-    assert message in result.stderr
-    assert result.stdout == ""
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
+
+    assert code == expected_exit_code
+    assert message in err
+    assert out == ""
 
 
-def test_cli_json_errors_go_to_stderr_not_stdout(runner, patch_save_url):
+def test_cli_json_errors_go_to_stderr_not_stdout(run_cli, patch_save_url):
     def raise_error(url, opts):
         raise WaybackError("boom")
 
     patch_save_url(raise_error)
-    result = runner.invoke(cli, save_cmd("--json", "http://example.com"))
-    assert result.exit_code == EXIT_ERROR
-    assert result.stdout == ""
-    assert "boom" in result.stderr
+    code, out, err = run_cli(main, save_cmd("--json", "http://example.com"))
+
+    assert code == EXIT_ERROR
+    assert out == ""
+    assert "boom" in err
 
 
-def test_cli_closes_client(runner, patch_save_url, monkeypatch):
+def test_cli_closes_client(run_cli, patch_save_url, monkeypatch):
     patch_save_url(success_result)
     closed = []
     original_close = WaybackClient.close
@@ -219,6 +213,7 @@ def test_cli_closes_client(runner, patch_save_url, monkeypatch):
         original_close(self)
 
     monkeypatch.setattr("pkit.wayback.cli.WaybackClient.close", spy_close)
-    result = runner.invoke(cli, save_cmd("http://example.com"))
-    assert result.exit_code == 0, result.stderr
+    code, _out, err = run_cli(main, save_cmd("http://example.com"))
+
+    assert code == 0, err
     assert closed == [True]

@@ -5,8 +5,8 @@ import re
 
 import pytest
 
-from pkit.common.cli_helpers import EXIT_ERROR, EXIT_TEMPFAIL, EXIT_USAGE
-from pkit.wayback.cli import cli
+from pkit.lib.cli import EXIT_ERROR, EXIT_TEMPFAIL, EXIT_USAGE
+from pkit.wayback.cli import main
 from pkit.wayback.client import (
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
@@ -22,7 +22,7 @@ def save_cmd(*args: str) -> list[str]:
     return ["--lock-file", "", "save", *args]
 
 
-def test_cli_save_success(requests_mock, runner, disable_sleep):
+def test_cli_save_success(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(f"{BASE_URL}/save", json={"job_id": "job1"})
     requests_mock.get(
@@ -34,13 +34,13 @@ def test_cli_save_success(requests_mock, runner, disable_sleep):
         },
     )
 
-    result = runner.invoke(cli, save_cmd("http://example.com"))
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
 
-    assert result.exit_code == 0, result.stderr
-    assert result.stdout.strip() == f"{BASE_URL}/web/123id_/http://example.com"
+    assert code == 0, err
+    assert out.strip() == f"{BASE_URL}/web/123id_/http://example.com"
 
 
-def test_cli_save_json_success(requests_mock, runner, disable_sleep):
+def test_cli_save_json_success(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(f"{BASE_URL}/save", json={"job_id": "job1"})
     requests_mock.get(
@@ -52,12 +52,10 @@ def test_cli_save_json_success(requests_mock, runner, disable_sleep):
         },
     )
 
-    result = runner.invoke(cli, save_cmd("--json", "http://example.com"))
+    code, out, err = run_cli(main, save_cmd("--json", "http://example.com"))
 
-    assert result.exit_code == 0, result.stderr
-
-    payload = json.loads(result.stdout)
-
+    assert code == 0, err
+    payload = json.loads(out)
     assert payload == {
         "url": "http://example.com",
         "archive_url": f"{BASE_URL}/web/123id_/http://example.com",
@@ -65,7 +63,7 @@ def test_cli_save_json_success(requests_mock, runner, disable_sleep):
     }
 
 
-def test_cli_auth_error(requests_mock, runner, disable_sleep):
+def test_cli_auth_error(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(
         f"{BASE_URL}/save",
@@ -73,14 +71,14 @@ def test_cli_auth_error(requests_mock, runner, disable_sleep):
         text="Unauthorized",
     )
 
-    result = runner.invoke(cli, save_cmd("http://example.com"))
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
 
-    assert result.exit_code == EXIT_USAGE
-    assert "HTTP 401: Unauthorized" in result.stderr
-    assert result.stdout == ""
+    assert code == EXIT_USAGE
+    assert "HTTP 401: Unauthorized" in err
+    assert out == ""
 
 
-def test_cli_rate_limit_error(requests_mock, runner, disable_sleep):
+def test_cli_rate_limit_error(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(
         f"{BASE_URL}/save",
@@ -88,14 +86,14 @@ def test_cli_rate_limit_error(requests_mock, runner, disable_sleep):
         text="rate limit",
     )
 
-    result = runner.invoke(cli, save_cmd("http://example.com"))
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
 
-    assert result.exit_code == EXIT_TEMPFAIL
-    assert "HTTP 429: rate limit" in result.stderr
-    assert result.stdout == ""
+    assert code == EXIT_TEMPFAIL
+    assert "HTTP 429: rate limit" in err
+    assert out == ""
 
 
-def test_cli_server_error(requests_mock, runner, disable_sleep):
+def test_cli_server_error(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(
         f"{BASE_URL}/save",
@@ -103,25 +101,25 @@ def test_cli_server_error(requests_mock, runner, disable_sleep):
         text="upstream exploded",
     )
 
-    result = runner.invoke(cli, save_cmd("http://example.com"))
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
 
-    assert result.exit_code == EXIT_ERROR
-    assert "HTTP 500: upstream exploded" in result.stderr
-    assert result.stdout == ""
+    assert code == EXIT_ERROR
+    assert "HTTP 500: upstream exploded" in err
+    assert out == ""
 
 
-def test_cli_missing_job_id(requests_mock, runner, disable_sleep):
+def test_cli_missing_job_id(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(f"{BASE_URL}/save", json={})
 
-    result = runner.invoke(cli, save_cmd("http://example.com"))
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
 
-    assert result.exit_code == EXIT_ERROR
-    assert "Missing job_id" in result.stderr
-    assert result.stdout == ""
+    assert code == EXIT_ERROR
+    assert "Missing job_id" in err
+    assert out == ""
 
 
-def test_cli_job_failure(requests_mock, runner, disable_sleep):
+def test_cli_job_failure(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(f"{BASE_URL}/save", json={"job_id": "job1"})
     requests_mock.get(
@@ -132,14 +130,14 @@ def test_cli_job_failure(requests_mock, runner, disable_sleep):
         },
     )
 
-    result = runner.invoke(cli, save_cmd("http://example.com"))
+    code, out, err = run_cli(main, save_cmd("http://example.com"))
 
-    assert result.exit_code == EXIT_ERROR
-    assert "SPN2 job job1 failed" in result.stderr
-    assert result.stdout == ""
+    assert code == EXIT_ERROR
+    assert "SPN2 job job1 failed" in err
+    assert out == ""
 
 
-def test_cli_json_error_stdout_empty(requests_mock, runner, disable_sleep):
+def test_cli_json_error_stdout_empty(run_cli, requests_mock, disable_sleep):
     requests_mock.get(USER_STATUS_RE, json={"available": 1})
     requests_mock.post(
         f"{BASE_URL}/save",
@@ -147,14 +145,14 @@ def test_cli_json_error_stdout_empty(requests_mock, runner, disable_sleep):
         text="upstream exploded",
     )
 
-    result = runner.invoke(cli, save_cmd("--json", "http://example.com"))
+    code, out, err = run_cli(main, save_cmd("--json", "http://example.com"))
 
-    assert result.exit_code == EXIT_ERROR
-    assert result.stdout == ""
-    assert "HTTP 500: upstream exploded" in result.stderr
+    assert code == EXIT_ERROR
+    assert out == ""
+    assert "HTTP 500: upstream exploded" in err
 
 
-def test_cli_proxy_prefix_is_used(requests_mock, runner, disable_sleep):
+def test_cli_proxy_prefix_is_used(run_cli, requests_mock, disable_sleep):
     proxy = "http://proxy.local/"
 
     proxy_user_status_re = re.compile(
@@ -175,8 +173,8 @@ def test_cli_proxy_prefix_is_used(requests_mock, runner, disable_sleep):
         },
     )
 
-    result = runner.invoke(
-        cli,
+    code, out, err = run_cli(
+        main,
         [
             "--proxy",
             proxy,
@@ -187,8 +185,8 @@ def test_cli_proxy_prefix_is_used(requests_mock, runner, disable_sleep):
         ],
     )
 
-    assert result.exit_code == 0, result.stderr
-    assert result.stdout.strip() == f"{BASE_URL}/web/9id_/http://proxy.example"
+    assert code == 0, err
+    assert out.strip() == f"{BASE_URL}/web/9id_/http://proxy.example"
 
 
 def test_sdk_save_success(requests_mock, disable_sleep):

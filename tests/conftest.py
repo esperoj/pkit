@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import inspect
 import sys
-from collections.abc import Generator
-from typing import Any
+from collections.abc import Callable, Generator
 
 import pytest
-from click.testing import CliRunner
 
 from pkit.wayback.client import WaybackClient
 
 
 class FakeStdin:
-    """Minimal fake stdin for direct helper tests."""
+    """Minimal fake stdin for direct CLI tests."""
 
     def __init__(self, text: str = "", *, is_tty: bool = False) -> None:
         self._text = text
@@ -23,22 +20,6 @@ class FakeStdin:
 
     def isatty(self) -> bool:
         return self._is_tty
-
-
-def _cli_runner_kwargs() -> dict[str, Any]:
-    """Return CliRunner kwargs for stdout/stderr separation across Click versions.
-
-    Older Click versions accept:
-
-        CliRunner(mix_stderr=False)
-
-    Newer Click versions removed `mix_stderr` and separate stdout/stderr by
-    default.
-    """
-    params = inspect.signature(CliRunner.__init__).parameters
-    if "mix_stderr" in params:
-        return {"mix_stderr": False}
-    return {}
 
 
 @pytest.fixture
@@ -52,9 +33,28 @@ def fake_stdin(monkeypatch):
 
 
 @pytest.fixture
-def runner() -> CliRunner:
-    """Click CLI runner with separated stdout/stderr."""
-    return CliRunner(**_cli_runner_kwargs())
+def run_cli(monkeypatch, capsys, fake_stdin):
+    """Call a CLI main() with faked stdin; return (exit_code, stdout, stderr).
+
+    SystemExit (argparse --help/--version/usage errors) is folded into the
+    returned code, mirroring what a console script would exit with.
+    """
+
+    def _run(
+        main: Callable[..., int],
+        args: list[str],
+        *,
+        input: str = "",
+    ) -> tuple[int, str, str]:
+        fake_stdin(input)
+        try:
+            code = main(list(args))
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 0
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    return _run
 
 
 @pytest.fixture

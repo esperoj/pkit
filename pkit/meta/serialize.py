@@ -6,9 +6,7 @@ from typing import Any
 
 from pkit.meta.models import RECORD_TYPES, Record
 
-__all__ = ["MODEL_REGISTRY", "from_dict", "from_json", "to_dict", "to_json"]
-
-MODEL_REGISTRY = RECORD_TYPES  # compat alias
+__all__ = ["from_dict", "from_json", "to_dict", "to_json"]
 
 
 def to_dict(model: Record) -> dict[str, Any]:

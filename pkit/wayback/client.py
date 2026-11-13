@@ -1,7 +1,9 @@
 """Wayback Machine SDK client.
 
-This module is library-only. It should not depend on Click or CLI concerns.
+This module is library-only. It should not know stdout/stderr or exit codes.
 Success returns structured dataclasses; failure raises typed exceptions.
+All HTTP goes through pkit.lib.http so the whole toolkit shares one
+session, timeout and error type.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Self
 from urllib.parse import urlencode
 
-import requests
+from pkit.lib.http import HttpClient, HttpError
 
 BASE_URL = "https://web.archive.org"
 DEFAULT_LOCK_FILE = "/tmp/spn2_submit.lock"
@@ -90,6 +92,18 @@ class CdxCapture:
     mimetype: str
 
 
+def _wayback_error(exc: HttpError) -> WaybackError:
+    """Map one transport failure onto the SDK's typed exceptions."""
+    if exc.status_code is None:
+        return WaybackError(str(exc))
+    message = f"HTTP {exc.status_code}: {exc.body}"
+    if exc.status_code in {401, 403}:
+        return AuthError(message)
+    if exc.status_code == 429:
+        return RateLimitError(message)
+    return WaybackError(message)
+
+
 class WaybackClient:
     """Client for Wayback Machine APIs.
 
@@ -106,20 +120,23 @@ class WaybackClient:
         proxy_prefix: str | None = None,
         lock_file: str | None = DEFAULT_LOCK_FILE,
         timeout: float | None = 120.0,
+        http: HttpClient | None = None,
     ) -> None:
         self.api_key = os.getenv(ENV_ACCESS_KEY) if api_key is None else api_key
         self.api_secret = os.getenv(ENV_SECRET_KEY) if api_secret is None else api_secret
         self.proxy_prefix = proxy_prefix or ""
         self.lock_file = DEFAULT_LOCK_FILE if lock_file is None else lock_file
         self.timeout = timeout
-        self._session = requests.Session()
-        self._session.headers.update({"Accept": "application/json"})
-        if self.api_key and self.api_secret:
-            self._session.headers["Authorization"] = f"LOW {self.api_key}:{self.api_secret}"
+        if http is None:
+            headers = {"Accept": "application/json"}
+            if self.api_key and self.api_secret:
+                headers["Authorization"] = f"LOW {self.api_key}:{self.api_secret}"
+            http = HttpClient(timeout=timeout, headers=headers)
+        self._http = http
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
-        self._session.close()
+        self._http.close()
 
     def __enter__(self) -> Self:
         return self
@@ -143,25 +160,9 @@ class WaybackClient:
         url = self._endpoint(path)
         request_timeout = self.timeout if timeout is None else timeout
         try:
-            response = self._session.request(
-                method,
-                url,
-                data=data,
-                timeout=request_timeout,
-            )
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            response = exc.response
-            if response is None:
-                raise WaybackError(str(exc)) from exc
-            message = f"HTTP {response.status_code}: {response.text}"
-            if response.status_code in {401, 403}:
-                raise AuthError(message) from exc
-            if response.status_code == 429:
-                raise RateLimitError(message) from exc
-            raise WaybackError(message) from exc
-        except requests.RequestException as exc:
-            raise WaybackError(str(exc)) from exc
+            response = self._http.request(method, url, data=data, timeout=request_timeout)
+        except HttpError as exc:
+            raise _wayback_error(exc) from exc
 
         try:
             payload = response.json()
