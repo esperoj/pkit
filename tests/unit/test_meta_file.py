@@ -39,4 +39,6 @@ def test_dump_load_round_trip(db_path, tmp_path):
     other = tmp_path / "other.db"
     assert load.load(other, repo) >= 1
     with db.session(other) as conn:
-        assert db.get(conn, ID).locations == ["ia:item/a"]
+        record = db.get(conn, ID)
+    assert isinstance(record, File)
+    assert record.locations == ["ia:item/a"]

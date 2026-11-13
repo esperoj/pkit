@@ -80,7 +80,9 @@ class WaybackBackend:
         parts = [self.base_url, self.prefix, relpath]
         return "/".join(part.strip("/") for part in parts if part)
 
-    def _captures(self, url: str, match_type: str) -> list[wayback_client.CdxCapture]:
+    # Sequence, not list: the method named `list` below shadows the builtin
+    # inside the class body, so `list[...]` would not resolve as a type here.
+    def _captures(self, url: str, match_type: str) -> Sequence[wayback_client.CdxCapture]:
         try:
             return self._client.cdx(url, match_type=match_type)
         except (wayback_client.RateLimitError, wayback_client.JobTimeoutError) as exc:
@@ -88,7 +90,7 @@ class WaybackBackend:
         except wayback_client.WaybackError as exc:
             raise ArchiveError(str(exc)) from exc
 
-    def list(self) -> list[RemoteFile]:
+    def list(self) -> Sequence[RemoteFile]:
         """One CDX prefix query: every 200 capture under the staging URL."""
         url = self.url_for("") + "/"
         oldest: dict[tuple[str, str], tuple[str, str]] = {}

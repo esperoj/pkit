@@ -78,14 +78,16 @@ class RcloneBackend:
             self._raise(exc)
             raise AssertionError("unreachable")
 
-    def _rows(self, raw: str) -> list[dict]:
+    # Sequence, not list: the method named `list` below shadows the builtin
+    # inside the class body, so `list[...]` would not resolve as a type here.
+    def _rows(self, raw: str) -> Sequence[dict]:
         try:
             rows = json.loads(raw or "[]")
         except ValueError as exc:
             raise ArchiveError("rclone lsjson returned invalid JSON") from exc
         return [row for row in rows if isinstance(row, dict)]
 
-    def list(self) -> list[RemoteFile]:
+    def list(self) -> Sequence[RemoteFile]:
         """One recursive listing with hashes for the whole prefix."""
         raw = self._run(["lsjson", "--recursive", "--files-only", "--hash", self.prefix])
         out = []
