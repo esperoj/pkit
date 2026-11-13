@@ -14,6 +14,7 @@ __all__ = [
     "new_id",
     "record_model",
     "stored_models",
+    "type_name",
 ]
 
 
@@ -35,6 +36,17 @@ class Link:
 RECORD_TYPES: dict[str, type[Record]] = {}
 
 
+def type_name(cls: type[Record]) -> str:
+    """The type name of a record class ("file"), or "" when unregistered.
+
+    The name is the default of `type: Literal["..."] = "..."`. Reading the
+    field default is required because slots=True turns `cls.type` into a slot
+    descriptor, not the value.
+    """
+    default = cls.__dataclass_fields__["type"].default
+    return default if isinstance(default, str) else ""
+
+
 def stored_models() -> tuple[type[Record], ...]:
     """The one discovery point: registered classes that own a SQL table.
 
@@ -49,18 +61,17 @@ def record_model(cls):
     """Freeze the class, derive its column layout, register its type.
 
     list/dict defaults -> JSON text columns, link keys -> own table, rest -> scalar.
-    The type name is the default of `type: Literal["..."] = "..."`; reading the
-    field default (not cls.type) is required because slots=True turns class
-    attribute access into a slot descriptor.
+    The type name is resolved by type_name(); see its docstring for why the
+    field default is read instead of cls.type.
     """
     cls = dataclass(cls, frozen=True, slots=True, kw_only=True)
     skip = {"id", "type", "slug"} | {link.key for link in cls.links}
     fs = [f for f in fields(cls) if f.name not in skip]
     cls.json_fields = tuple(f.name for f in fs if f.default_factory in (list, dict))
     cls.scalar_fields = tuple(f.name for f in fs if f.name not in cls.json_fields)
-    type_name = cls.__dataclass_fields__["type"].default
-    if isinstance(type_name, str) and type_name:
-        RECORD_TYPES[type_name] = cls
+    name = type_name(cls)
+    if name:
+        RECORD_TYPES[name] = cls
     return cls
 
 

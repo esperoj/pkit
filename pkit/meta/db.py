@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from pkit.meta import config as meta_config
-from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models
+from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models, type_name
 from pkit.meta.serialize import from_dict, from_json
 
 __all__ = [
@@ -60,7 +60,7 @@ def _normalize(record: Record) -> Record:
 def _payload_sql(cls: type[Record]) -> str:
     """SQL expression returning one row as a JSON payload, links included."""
     table = _q(cls.table)
-    parts = ["'id'", "id", "'type'", f"'{cls.type}'", "'slug'", "slug"]
+    parts = ["'id'", "id", "'type'", f"'{type_name(cls)}'", "'slug'", "slug"]
     parts += [x for n in cls.scalar_fields for x in (f"'{n}'", _q(n))]
     parts += [x for n in cls.json_fields for x in (f"'{n}'", f"json({_q(n)})")]
     for link in cls.links:
@@ -220,7 +220,7 @@ def find(
     if isinstance(record_type, type):
         if not issubclass(record_type, Record):
             raise TypeError(f"not a Record class: {record_type!r}")
-        record_type = record_type.type
+        record_type = type_name(record_type)
     if record_type is not None and record_type not in RECORD_TYPES:
         known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
         raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
