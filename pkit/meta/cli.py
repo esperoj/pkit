@@ -1,8 +1,8 @@
 """meta CLI: dump, load, and check the record database.
 
-pkit meta dump [REPO]                 # database -> <repo>/<table>.json
-pkit meta load [--refresh] [SOURCE]   # JSON repo or source URL -> database
-pkit meta validate                    # orphan link rows, duplicate ids/identifiers
+pkit meta dump [REPO]                                # database -> <repo>/<table>.json
+pkit meta load [--refresh] [--lang LANG] [SOURCE]    # JSON repo or source URL -> database
+pkit meta validate                                   # orphan link rows, duplicate ids/identifiers
 """
 
 import argparse
@@ -47,6 +47,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-fetch and update existing records (source URLs only).",
     )
+    load_cmd.add_argument(
+        "--lang",
+        choices=load.VALID_LANGS,
+        default=None,
+        help="Main field language for source imports (default: [meta] lang or 'auto').",
+    )
     load_cmd.set_defaults(func=_load)
 
     validate_cmd = sub.add_parser(
@@ -67,7 +73,7 @@ def _dump(args: argparse.Namespace) -> int:
 
 def _load(args: argparse.Namespace) -> int:
     try:
-        count = load.load(args.source, refresh=args.refresh)
+        count = load.load(args.source, refresh=args.refresh, lang=args.lang)
     except (OSError, ValueError) as exc:
         return fail(str(exc), exit_code=EXIT_USAGE)
     except HttpError as exc:

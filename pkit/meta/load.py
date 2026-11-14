@@ -6,7 +6,7 @@ cycle protection and identifier-based deduplication.
 """
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -19,13 +19,22 @@ from pkit.meta.serialize import from_dict
 from pkit.meta.source import Plan, Source
 from pkit.meta.wikidata import WikidataSource
 
-__all__ = ["SOURCES", "load"]
+__all__ = ["SOURCES", "VALID_LANGS", "load"]
 
 SOURCES: tuple[Callable[[], Source], ...] = (WikidataSource,)
+VALID_LANGS = ("auto", "en", "vi", "zh")
 
 
 def _looks_like_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
+
+
+def _resolve_lang(lang: str | None, default: str) -> str:
+    value = (default if lang is None else lang).strip().lower()
+    if value not in VALID_LANGS:
+        choices = ", ".join(VALID_LANGS)
+        raise ValueError(f"unsupported language {value!r}; choose from {choices}")
+    return value
 
 
 def _match_source(value: str) -> tuple[Callable[[], Source], str] | None:
@@ -76,6 +85,25 @@ def _dedupe(items: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
 
 
+def _merge_extra(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> dict[str, Any]:
+    merged = {**existing, **incoming}
+    prev_i18n = existing.get("i18n")
+    curr_i18n = incoming.get("i18n")
+    if isinstance(prev_i18n, Mapping) and isinstance(curr_i18n, Mapping):
+        i18n: dict[str, Any] = {}
+        for lang_code in sorted({*prev_i18n, *curr_i18n}):
+            prev_entry = prev_i18n.get(lang_code)
+            curr_entry = curr_i18n.get(lang_code)
+            if isinstance(prev_entry, Mapping) and isinstance(curr_entry, Mapping):
+                i18n[lang_code] = {**prev_entry, **curr_entry}
+            elif curr_entry is not None:
+                i18n[lang_code] = curr_entry
+            elif prev_entry is not None:
+                i18n[lang_code] = prev_entry
+        merged["i18n"] = i18n
+    return merged
+
+
 def _merge_record(
     model: type[Record],
     record_id: str,
@@ -94,7 +122,7 @@ def _merge_record(
 
     existing_extra = existing.extra if existing is not None else {}
     incoming_extra = values.get("extra") or {}
-    payload["extra"] = {**existing_extra, **incoming_extra}
+    payload["extra"] = _merge_extra(existing_extra, incoming_extra)
 
     link_keys = {link.key for link in model.links}
     list_fields = {f.name for f in fields(model) if f.default_factory is list} | link_keys
@@ -127,6 +155,7 @@ def _load_source(
     *,
     db_path: str | Path | None,
     refresh: bool = False,
+    lang: str = "auto",
 ) -> int:
     resolved: dict[str, str] = {}
     provisional: dict[str, str] = {}
@@ -148,7 +177,7 @@ def _load_source(
                     return existing_rows[0].id
             visiting.add(key)
 
-            item = src.fetch(key, expected=expected)
+            item = src.fetch(key, expected=expected, lang=lang)
             if item is None:
                 visiting.discard(key)
                 if expected is None:
@@ -217,14 +246,17 @@ def load(
     *,
     db_path: str | Path | None = None,
     refresh: bool = False,
+    lang: str | None = None,
 ) -> int:
     """Load records from a local JSON repo or a supported source URL.
 
     When source is omitted, loads from [meta] repo_path. Existing records from
-    source URLs are skipped unless refresh=True. Returns the number of records
-    written to the database.
+    source URLs are skipped unless refresh=True. lang selects the main display
+    language (auto|en|vi|zh), defaulting to [meta] lang / $PKIT_META_LANG.
+    Returns the number of records written to the database.
     """
     cfg = config.load()
+    target_lang = _resolve_lang(lang, cfg.lang)
     target_db = db_path or cfg.db_path
     if source is None:
         return _load_repo(as_path(cfg.repo_path), db_path=target_db)
@@ -232,7 +264,7 @@ def load(
         matched = _match_source(source)
         if matched is not None:
             factory, key = matched
-            return _load_source(factory, key, db_path=target_db, refresh=refresh)
+            return _load_source(factory, key, db_path=target_db, refresh=refresh, lang=target_lang)
         if _looks_like_url(source):
             raise ValueError(f"unsupported source URL: {source}")
     return _load_repo(as_path(source), db_path=target_db)

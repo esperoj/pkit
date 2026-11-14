@@ -184,6 +184,11 @@ for: logging, configuration, validation, retry, schema enforcement, CLI
 generation, DI, rich output, progress bars, metrics, HTTP mocking. A
 dependency is accepted only if it removes significant code *and* is stable.
 
+Packaging and environments use PyPA standard tooling only: ~venv~ + ~pip~ +
+~pip-tools~ for hash-locked dependencies (~requirements.txt~ and
+~requirements-dev.txt~, generated from ~pyproject.toml~ via ~make lock~),
+and ~pipx~ (~pip~ backend) for global CLI installation via ~make install~.
+
 * 7. Testing
 
 pytest. Fixtures for shared setup. Small focused unit tests. A few integration

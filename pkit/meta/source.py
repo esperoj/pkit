@@ -71,6 +71,12 @@ class Source(Protocol):
         """Return the source-native key for url, or None if not handled."""
         ...
 
-    def fetch(self, key: str, *, expected: type[Record] | None = None) -> Any:
+    def fetch(
+        self,
+        key: str,
+        *,
+        expected: type[Record] | None = None,
+        lang: str = "auto",
+    ) -> Any:
         """Fetch one item by key, or return None if missing."""
         ...

@@ -1,10 +1,11 @@
 .DEFAULT_GOAL := help
 
 PYTHON ?= python3
+PIPX ?= pipx
 VENV ?= .venv
 BIN := $(VENV)/bin
 PY := $(BIN)/python
-PIP := $(BIN)/pip
+COMPILE := $(PY) -m piptools compile --generate-hashes --strip-extras --allow-unsafe --no-emit-index-url
 
 .PHONY: help
 help: ## Show available make targets.
@@ -14,12 +15,35 @@ help: ## Show available make targets.
 venv: ## Create a local virtual environment.
 	@test -d $(VENV) || $(PYTHON) -m venv $(VENV)
 
+.PHONY: lock
+lock: venv ## Lock runtime and dev dependencies with SHA-256 hashes.
+	@$(PY) -m piptools --version >/dev/null 2>&1 || $(PY) -m pip install --upgrade pip "pip-tools>=7.6.2"
+	$(COMPILE) -o requirements.txt pyproject.toml
+	$(COMPILE) --extra=dev -o requirements-dev.txt pyproject.toml
+
+.PHONY: upgrade
+upgrade: venv ## Upgrade all locked dependencies to latest versions.
+	@$(PY) -m piptools --version >/dev/null 2>&1 || $(PY) -m pip install --upgrade pip "pip-tools>=7.6.2"
+	$(COMPILE) --upgrade -o requirements.txt pyproject.toml
+	$(COMPILE) --upgrade --extra=dev -o requirements-dev.txt pyproject.toml
+
 .PHONY: dev
-dev: venv ## Install project and development dependencies.
-	$(PIP) install -e ".[dev]"
+dev: venv ## Install locked dev dependencies and editable package.
+	@test -f requirements-dev.txt || { echo "error: requirements-dev.txt missing; run 'make lock' first."; exit 1; }
+	$(PY) -m pip install --require-hashes -r requirements-dev.txt
+	$(PY) -m pip install --no-deps -e .
 
 .PHONY: install
-install: dev ## Alias for make dev.
+install: ## Install pkit globally with pipx using locked runtime deps.
+	@command -v $(PIPX) >/dev/null 2>&1 || { echo "error: pipx is required (https://pipx.pypa.io)."; exit 1; }
+	@test -f requirements.txt || { echo "error: requirements.txt missing; run 'make lock' first."; exit 1; }
+	PIPX_DEFAULT_BACKEND=pip $(PIPX) install --force .
+	PIPX_DEFAULT_BACKEND=pip $(PIPX) runpip pkit install --require-hashes --no-deps --force-reinstall -r requirements.txt
+
+.PHONY: uninstall
+uninstall: ## Remove global pkit installation managed by pipx.
+	@command -v $(PIPX) >/dev/null 2>&1 || { echo "error: pipx is required (https://pipx.pypa.io)."; exit 1; }
+	$(PIPX) uninstall pkit
 
 .PHONY: test
 test: ## Run tests.
@@ -76,8 +100,8 @@ release: ## Bump VERSION, run full check, commit, and tag. Usage: make release V
 	git commit -m "Release v$(VERSION)"
 	git tag -a "v$(VERSION)" -m "v$(VERSION)"
 	@echo "Tagged v$(VERSION). Push with: git push origin main v$(VERSION)"
-.PHONY: setup-remotes
 
+.PHONY: setup-remotes
 setup-remotes:
 	@git config --remove-section remote.origin
 	@git remote add origin git@github.com:esperoj/pkit.git

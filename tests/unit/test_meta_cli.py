@@ -3,6 +3,7 @@ import json
 import pytest
 
 from pkit.lib.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE
+from pkit.meta import config as meta_config
 from pkit.meta.cli import main
 from pkit.meta.db import MetaDB
 from pkit.meta.models import File, Person, Text
@@ -87,6 +88,54 @@ def test_load_missing_repo_is_usage_error(run_cli, db_path, tmp_path):
 
     assert code == EXIT_USAGE
     assert "no record repo" in err
+    assert out == ""
+
+
+def test_load_passes_lang_flag(run_cli, db_path, monkeypatch):
+    seen: list[tuple[str | None, bool, str | None]] = []
+
+    def fake_load(source=None, *, refresh=False, lang=None):
+        seen.append((source, refresh, lang))
+        return 1
+
+    monkeypatch.setattr("pkit.meta.cli.load.load", fake_load)
+
+    code, out, err = run_cli(main, ["load", "--lang", "zh", "wikidata:Q42"])
+
+    assert code == EXIT_OK, err
+    assert out.strip() == "1"
+    assert seen == [("wikidata:Q42", False, "zh")]
+
+
+def test_load_invalid_lang_flag_is_usage_error(run_cli, db_path):
+    code, out, err = run_cli(main, ["load", "--lang", "fr", "wikidata:Q42"])
+
+    assert code == EXIT_USAGE
+    assert out == ""
+    assert "invalid choice" in err
+
+
+def test_config_lang_toml_and_env_precedence(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[meta]\nlang = "vi"\n', encoding="utf-8")
+    monkeypatch.setenv("PKIT_CONFIG", str(cfg_file))
+    monkeypatch.delenv("PKIT_META_LANG", raising=False)
+
+    assert meta_config.load().lang == "vi"
+
+    monkeypatch.setenv("PKIT_META_LANG", "zh")
+    assert meta_config.load().lang == "zh"
+
+
+def test_load_invalid_toml_lang_is_usage_error(run_cli, db_path, tmp_path, monkeypatch):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[meta]\nlang = "bogus"\n', encoding="utf-8")
+    monkeypatch.setenv("PKIT_CONFIG", str(cfg_file))
+
+    code, out, err = run_cli(main, ["load", "wikidata:Q42"])
+
+    assert code == EXIT_USAGE
+    assert "unsupported language" in err
     assert out == ""
 
 
