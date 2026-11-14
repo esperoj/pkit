@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 
@@ -11,43 +10,17 @@ from pkit import archive
 from pkit.archive.cas import cas_path, hash_file
 from pkit.archive.cli import main
 from pkit.archive.rclone import RcloneBackend
+from pkit.archive.remote import RemoteFile
 from pkit.lib.cli import EXIT_ERROR, EXIT_OK, EXIT_TEMPFAIL, EXIT_USAGE
 from pkit.meta.cli import main as meta_main
+from pkit.meta.db import MetaDB
+from pkit.meta.models import File
 
 PAYLOAD = b"pandora"
 
 
-class FakeRclone:
-    """Stand-in for shell.run: answers lsjson queries from canned rows."""
-
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls: list[list[str]] = []
-
-    def __call__(self, args: Sequence[str], *, timeout=None):
-        self.calls.append(list(args))
-        out = json.dumps(self.rows) if "lsjson" in args else ""
-        return subprocess.CompletedProcess(list(args), 0, out, "")
-
-
 def _row(hashes, path="v1.cbz"):
     return {"Path": path, "Name": path, "Size": len(PAYLOAD), "IsDir": False, "Hashes": hashes}
-
-
-@pytest.fixture
-def repo(tmp_path):
-    (tmp_path / ".git").mkdir()
-    tree = tmp_path / "manga"
-    tree.mkdir()
-    (tree / "v1.cbz").write_bytes(PAYLOAD)
-    return tmp_path
-
-
-@pytest.fixture
-def db_path(tmp_path, monkeypatch):
-    path = tmp_path / "records.db"
-    monkeypatch.setenv("PKIT_META_DB_PATH", str(path))
-    return path
 
 
 @pytest.fixture
@@ -148,11 +121,8 @@ def test_fix_reports_missing_objects(run_cli, repo, db_path, added):
     assert f"missing {item}" in out
 
 
-def test_match_registers_locations(run_cli, repo, db_path, added, monkeypatch):
-    monkeypatch.setattr(
-        "pkit.archive.rclone.shell.run",
-        FakeRclone([_row({"SHA-1": added.sha1})]),
-    )
+def test_match_registers_locations(run_cli, repo, db_path, added, rclone):
+    rclone.rows = [_row({"SHA-1": added.sha1})]
 
     code, out, err = run_cli(main, ["match", "ia:x"])
 
@@ -160,14 +130,21 @@ def test_match_registers_locations(run_cli, repo, db_path, added, monkeypatch):
     assert out.strip() == "1 matched, 0 unknown, 0 without hashes"
 
 
-def test_copy_uploads_missing(run_cli, repo, db_path, added, monkeypatch):
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", FakeRclone([]))
-    monkeypatch.setattr(RcloneBackend, "list", lambda self: [])
-
+def test_copy_uploads_missing(run_cli, repo, db_path, added, rclone):
     code, out, err = run_cli(main, ["copy", str(repo / "manga"), "ia:x"])
 
     assert code == EXIT_OK, err
     assert out.startswith("1 copied, 0 already present")
+    assert any(call[1] == "copy" for call in rclone.calls)
+
+
+def test_copy_skips_present(run_cli, repo, db_path, added, rclone):
+    rclone.rows = [_row({"MD5": added.md5})]
+
+    code, out, err = run_cli(main, ["copy", str(repo / "manga"), "ia:x"])
+
+    assert code == EXIT_OK, err
+    assert out.startswith("0 copied, 1 already present")
 
 
 def test_verify_local_ok(run_cli, repo, db_path, added):
@@ -185,11 +162,8 @@ def test_verify_json(run_cli, repo, db_path, added):
     assert payload["checks"] == [{"location": "local", "status": "ok"}]
 
 
-def test_verify_remote_ok(run_cli, repo, db_path, added, monkeypatch):
-    monkeypatch.setattr(
-        "pkit.archive.rclone.shell.run",
-        FakeRclone([_row({"SHA-1": added.sha1})]),
-    )
+def test_verify_remote_ok(run_cli, repo, db_path, added, rclone):
+    rclone.rows = [_row({"SHA-1": added.sha1})]
     run_cli(main, ["match", "ia:x"])
 
     code, out, err = run_cli(main, ["verify", str(repo / "manga" / "v1.cbz")])
@@ -198,19 +172,12 @@ def test_verify_remote_ok(run_cli, repo, db_path, added, monkeypatch):
     assert "ia:x/v1.cbz\tok" in out
 
 
-def test_verify_mismatch_fails(run_cli, repo, db_path, added, monkeypatch):
-    from dataclasses import replace
-
-    from pkit.meta import db
-
-    with db.session(db_path) as conn:
-        record = db.get(conn, added.record_id)
-        assert record is not None
-        db.put(conn, replace(record, locations=["ia:x/v1.cbz"]))
-    monkeypatch.setattr(
-        "pkit.archive.rclone.shell.run",
-        FakeRclone([_row({"SHA-1": "0" * 40})]),
-    )
+def test_verify_mismatch_fails(run_cli, repo, db_path, added, rclone):
+    with MetaDB(db_path) as meta:
+        record = meta.get(added.record_id)
+        assert isinstance(record, File)
+        meta.put(replace(record, locations=["ia:x/v1.cbz"]))
+    rclone.rows = [_row({"SHA-1": "0" * 40})]
 
     code, out, _err = run_cli(main, ["verify", str(repo / "manga" / "v1.cbz")])
 
@@ -226,7 +193,18 @@ def test_drop_without_remote_fails(run_cli, repo, db_path, added):
     assert out == ""
 
 
-def test_get_restores_from_remote(run_cli, repo, db_path, added, monkeypatch):
+def test_drop_success_via_cli(run_cli, repo, db_path, added, install_backend):
+    install_backend(remote="ia:x", files=[RemoteFile("ia:x/v1.cbz", (f"sha1:{added.sha1}",))])
+    run_cli(main, ["match", "ia:x"])
+
+    code, out, err = run_cli(main, ["drop", str(repo / "manga" / "v1.cbz")])
+
+    assert code == EXIT_OK, err
+    assert out.strip() == f"dropped {added.record_id} (verified at ia:x/v1.cbz)"
+    assert not cas_path(repo / ".git" / "pkit-archive", added.sha256).exists()
+
+
+def test_get_restores_from_remote(run_cli, repo, db_path, added, rclone, monkeypatch):
     obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
     obj.unlink()
 
@@ -234,10 +212,7 @@ def test_get_restores_from_remote(run_cli, repo, db_path, added, monkeypatch):
         dest.write_bytes(PAYLOAD)
 
     monkeypatch.setattr(RcloneBackend, "fetch", fake_fetch)
-    monkeypatch.setattr(
-        "pkit.archive.rclone.shell.run",
-        FakeRclone([_row({"SHA-1": added.sha1})]),
-    )
+    rclone.rows = [_row({"SHA-1": added.sha1})]
     run_cli(main, ["match", "ia:x"])
 
     code, out, err = run_cli(main, ["get", str(repo / "manga" / "v1.cbz")])
@@ -258,11 +233,8 @@ def test_forget_reports_counts(run_cli, repo, db_path, added):
     assert out.strip() == "1 forgotten, 0 kept"
 
 
-def test_remove_location_updates_record(run_cli, repo, db_path, added, monkeypatch):
-    monkeypatch.setattr(
-        "pkit.archive.rclone.shell.run",
-        FakeRclone([_row({"SHA-1": added.sha1})]),
-    )
+def test_remove_location_updates_record(run_cli, repo, db_path, added, rclone):
+    rclone.rows = [_row({"SHA-1": added.sha1})]
     run_cli(main, ["match", "ia:x"])
 
     code, out, err = run_cli(
@@ -270,7 +242,7 @@ def test_remove_location_updates_record(run_cli, repo, db_path, added, monkeypat
     )
 
     assert code == EXIT_OK, err
-    assert out.strip() == f"0 locations remain for sha256:{added.sha256}"
+    assert out.strip() == f"0 locations remain for {added.record_id}"
 
 
 def test_meta_reads_what_archive_writes(run_cli, repo, db_path, added, tmp_path):

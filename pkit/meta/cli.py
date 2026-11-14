@@ -19,7 +19,8 @@ from pkit.lib.cli import (
     run_tool,
 )
 from pkit.lib.http import HttpError
-from pkit.meta import db, dump, load
+from pkit.meta import dump, load
+from pkit.meta.db import MetaDB
 from pkit.version import get_version
 
 __all__ = ["DESCRIPTION", "main"]
@@ -76,8 +77,8 @@ def _load(args: argparse.Namespace) -> int:
 
 
 def _validate(_: argparse.Namespace) -> int:
-    with db.session(None) as conn:
-        issues = db.validate(conn)
+    with MetaDB() as db:
+        issues = db.validate()
     for issue in issues:
         print(issue)
     return EXIT_OK if not issues else EXIT_ERROR

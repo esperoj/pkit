@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import pytest
-import requests
 
+from pkit.lib.http import HttpError
 from pkit.wayback.client import (
     BASE_URL,
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
     AuthError,
+    CdxCapture,
     InputError,
     JobFailedError,
     JobTimeoutError,
@@ -20,86 +21,103 @@ from pkit.wayback.client import (
 )
 
 
-def test_init_uses_env_credentials(monkeypatch, requests_mock):
+def make_client(http) -> WaybackClient:
+    return WaybackClient(api_key="k", api_secret="s", lock_file="", timeout=0.1, http=http)
+
+
+def test_init_uses_env_credentials(http_server, monkeypatch):
     monkeypatch.setenv(ENV_ACCESS_KEY, "env-key")
     monkeypatch.setenv(ENV_SECRET_KEY, "env-secret")
-    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
+    http_server.route("GET", f"/{BASE_URL}/thing", json={"a": 1})
 
-    client = WaybackClient(lock_file="")
-    client._request("GET", "/thing")
-    client.close()
+    with WaybackClient(lock_file="", proxy_prefix=f"{http_server.url}/") as client:
+        client._request("GET", "/thing")
 
-    assert requests_mock.last_request.headers["Authorization"] == "LOW env-key:env-secret"
+    assert http_server.requests[-1]["headers"]["Authorization"] == "LOW env-key:env-secret"
 
 
-def test_init_explicit_credentials_override_env(monkeypatch, requests_mock):
+def test_init_explicit_credentials_override_env(http_server, monkeypatch):
     monkeypatch.setenv(ENV_ACCESS_KEY, "old-key")
     monkeypatch.setenv(ENV_SECRET_KEY, "old-secret")
-    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
+    http_server.route("GET", f"/{BASE_URL}/thing", json={"a": 1})
 
-    client = WaybackClient(
-        api_key="new-key",
-        api_secret="new-secret",
-        lock_file="",
-    )
-    client._request("GET", "/thing")
-    client.close()
+    with WaybackClient(
+        api_key="new-key", api_secret="new-secret", lock_file="", proxy_prefix=f"{http_server.url}/"
+    ) as client:
+        client._request("GET", "/thing")
 
-    assert requests_mock.last_request.headers["Authorization"] == "LOW new-key:new-secret"
+    assert http_server.requests[-1]["headers"]["Authorization"] == "LOW new-key:new-secret"
 
 
-def test_init_no_auth_header_when_credentials_missing(monkeypatch, requests_mock):
+def test_init_no_auth_header_when_credentials_missing(http_server, monkeypatch):
     monkeypatch.delenv(ENV_ACCESS_KEY, raising=False)
     monkeypatch.delenv(ENV_SECRET_KEY, raising=False)
-    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
+    http_server.route("GET", f"/{BASE_URL}/thing", json={"a": 1})
 
-    client = WaybackClient(lock_file="")
-    client._request("GET", "/thing")
-    client.close()
+    with WaybackClient(lock_file="", proxy_prefix=f"{http_server.url}/") as client:
+        client._request("GET", "/thing")
 
-    assert "Authorization" not in requests_mock.last_request.headers
+    assert "Authorization" not in http_server.requests[-1]["headers"]
 
 
-def test_lock_file_none_uses_default():
-    client = WaybackClient(lock_file=None)
+def test_lock_file_none_uses_default(fake_http):
+    client = WaybackClient(lock_file=None, http=fake_http)
     assert client.lock_file == DEFAULT_LOCK_FILE
     client.close()
 
 
-def test_endpoint_applies_proxy():
-    client = WaybackClient(proxy_prefix="http://proxy/", lock_file="")
+def test_endpoint_applies_proxy(fake_http):
+    client = WaybackClient(proxy_prefix="http://proxy/", lock_file="", http=fake_http)
     assert client._endpoint("/save") == "http://proxy/https://web.archive.org/save"
     client.close()
 
 
-def test_close_closes_http(monkeypatch):
-    client = WaybackClient(lock_file="")
+def test_close_closes_owned_http(monkeypatch):
     called = []
-    monkeypatch.setattr(client._http, "close", lambda: called.append(True))
-    client.close()
-    assert called == [True]
+    with WaybackClient(lock_file="") as client:
+        monkeypatch.setattr(client._http, "close", lambda: called.append(True))
+        client.close()
+        assert called == [True]
 
 
-def test_context_manager_closes_http(monkeypatch):
+def test_context_manager_closes_owned_http(monkeypatch):
     called = []
     with WaybackClient(lock_file="") as client:
         monkeypatch.setattr(client._http, "close", lambda: called.append(True))
     assert called == [True]
 
 
-def test_request_returns_json_dict(requests_mock, client):
-    requests_mock.get(f"{BASE_URL}/thing", json={"a": 1})
-    assert client._request("GET", "/thing") == {"a": 1}
+def test_close_keeps_injected_http(fake_http, monkeypatch):
+    """An injected transport belongs to the caller; the client must not close it."""
+    called = []
+    monkeypatch.setattr(fake_http, "close", lambda: called.append(True))
+    client = make_client(fake_http)
+    client.close()
+    assert called == []
 
 
-def test_request_wraps_json_list(requests_mock, client):
-    requests_mock.get(f"{BASE_URL}/thing", json=[1, 2])
-    assert client._request("GET", "/thing") == {"data": [1, 2]}
+def test_request_returns_json_dict(fake_http):
+    fake_http.on(f"{BASE_URL}/thing", json={"a": 1})
+    with make_client(fake_http) as client:
+        assert client._request("GET", "/thing") == {"a": 1}
 
 
-def test_request_returns_raw_text_when_not_json(requests_mock, client):
-    requests_mock.get(f"{BASE_URL}/thing", text="hello")
-    assert client._request("GET", "/thing") == {"raw_response": "hello"}
+def test_request_wraps_json_list(fake_http):
+    fake_http.on(f"{BASE_URL}/thing", json=[1, 2])
+    with make_client(fake_http) as client:
+        assert client._request("GET", "/thing") == {"data": [1, 2]}
+
+
+def test_request_returns_raw_text_when_not_json(fake_http):
+    fake_http.on(f"{BASE_URL}/thing", text="hello")
+    with make_client(fake_http) as client:
+        assert client._request("GET", "/thing") == {"raw_response": "hello"}
+
+
+def test_request_maps_transport_error(fake_http):
+    fake_http.on(f"{BASE_URL}/thing", error=HttpError("connection reset"))
+    with make_client(fake_http) as client, pytest.raises(WaybackError, match="connection reset"):
+        client._request("GET", "/thing")
 
 
 @pytest.mark.parametrize(
@@ -111,37 +129,9 @@ def test_request_returns_raw_text_when_not_json(requests_mock, client):
         (500, WaybackError),
     ],
 )
-def test_request_http_status_exceptions(
-    requests_mock,
-    client,
-    status_code,
-    expected_exception,
-):
-    requests_mock.get(
-        f"{BASE_URL}/thing",
-        status_code=status_code,
-        text="nope",
-    )
-    with pytest.raises(expected_exception):
-        client._request("GET", "/thing")
-
-
-def test_request_http_error_without_response(client, monkeypatch):
-    def raise_http_error(method, url, **kwargs):
-        raise requests.HTTPError("boom", response=None)
-
-    monkeypatch.setattr(client._http._session, "request", raise_http_error)
-
-    with pytest.raises(WaybackError, match="boom"):
-        client._request("GET", "/thing")
-
-
-def test_request_connection_error(requests_mock, client):
-    requests_mock.get(
-        f"{BASE_URL}/thing",
-        exc=requests.exceptions.ConnectTimeout,
-    )
-    with pytest.raises(WaybackError):
+def test_request_http_status_exceptions(fake_http, status_code, expected_exception):
+    fake_http.on(f"{BASE_URL}/thing", status=status_code, text="nope")
+    with make_client(fake_http) as client, pytest.raises(expected_exception):
         client._request("GET", "/thing")
 
 
@@ -150,9 +140,9 @@ def test_locked_disabled(client):
         pass
 
 
-def test_locked_creates_file(tmp_path):
+def test_locked_creates_file(tmp_path, fake_http):
     lock = tmp_path / "lock"
-    client = WaybackClient(lock_file=str(lock))
+    client = WaybackClient(lock_file=str(lock), http=fake_http)
     with client._locked():
         assert lock.exists()
     client.close()
@@ -307,6 +297,17 @@ def test_poll_save_job_success(client, monkeypatch):
     assert url == f"{BASE_URL}/web/123id_/http://example.com"
 
 
+def test_poll_save_job_success_without_timestamp(client, monkeypatch):
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda method, path: {"status": "success", "timestamp": ""},
+    )
+
+    with pytest.raises(JobFailedError, match="without timestamp"):
+        client._poll_save_job("http://example.com", "job1")
+
+
 def test_poll_save_job_pending_then_success(client, monkeypatch):
     responses = [
         {"status": "pending"},
@@ -378,6 +379,26 @@ def test_save_url_success(client, monkeypatch):
     )
 
 
+def test_save_url_full_flow_over_http(fake_http, disable_sleep):
+    fake_http.on(f"{BASE_URL}/save/status/user", json={"available": 1})
+    fake_http.on(f"{BASE_URL}/save", json={"job_id": "job1"})
+    fake_http.on(
+        f"{BASE_URL}/save/status/job1",
+        json={"status": "success", "timestamp": "123", "original_url": "http://example.com"},
+    )
+
+    with make_client(fake_http) as client:
+        result = client.save_url("http://example.com")
+
+    assert result == SaveResult(
+        url="http://example.com",
+        archive_url=f"{BASE_URL}/web/123id_/http://example.com",
+        job_id="job1",
+    )
+    post = next(request for request in fake_http.requests if request["method"] == "POST")
+    assert post["url"] == f"{BASE_URL}/save"
+
+
 @pytest.mark.parametrize(
     "exc_class",
     [
@@ -396,3 +417,45 @@ def test_save_url_propagates_sdk_exceptions(client, monkeypatch, exc_class):
 
     with pytest.raises(exc_class):
         client.save_url("http://x")
+
+
+def test_cdx_parses_rows_and_skips_header(fake_http):
+    fake_http.on(
+        f"{BASE_URL}/cdx/search/cdx",
+        json=[
+            ["original", "timestamp", "digest", "statuscode", "mimetype"],
+            ["https://host/a", "20260101000000", "ABC", "200", "application/pdf"],
+        ],
+    )
+    with make_client(fake_http) as client:
+        rows = client.cdx("https://host/", match_type="prefix")
+    assert rows == [
+        CdxCapture(
+            original="https://host/a",
+            timestamp="20260101000000",
+            digest="ABC",
+            statuscode="200",
+            mimetype="application/pdf",
+        )
+    ]
+
+
+def test_cdx_empty_body_is_empty_list(fake_http):
+    fake_http.on(f"{BASE_URL}/cdx/search/cdx", text="")
+    with make_client(fake_http) as client:
+        assert client.cdx("https://host/a") == []
+
+
+def test_cdx_requires_url(fake_http):
+    with make_client(fake_http) as client, pytest.raises(InputError):
+        client.cdx("")
+
+
+def test_cdx_sends_query(fake_http):
+    fake_http.on(f"{BASE_URL}/cdx/search/cdx", json=[])
+    with make_client(fake_http) as client:
+        client.cdx("https://host/a", match_type="prefix", limit=5)
+    url = fake_http.requests[0]["url"]
+    assert "matchType=prefix" in url
+    assert "limit=5" in url
+    assert "url=https%3A%2F%2Fhost%2Fa" in url

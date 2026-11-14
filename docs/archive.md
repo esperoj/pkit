@@ -128,10 +128,10 @@ does; `/sdcard` does not).
 ## Sync between machines
 
 ```python
-from pkit.meta import sync
+from pkit.meta import dump, load
 
-sync.dump()  # records -> JSON repo (commit it)
-sync.load()  # JSON repo -> records on the other machine
+dump.dump("~/records")  # records -> JSON repo (commit it)
+load.load("~/records")  # JSON repo -> records on the other machine
 ```
 
 Or from the shell: `pkit meta dump` / `pkit meta load`
@@ -139,3 +139,4 @@ Or from the shell: `pkit meta dump` / `pkit meta load`
 
 The CAS is per-machine; the record repo is shared. Wayback locations can be
 rebuilt from CDX alone if the database is lost.
+

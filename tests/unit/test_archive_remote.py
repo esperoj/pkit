@@ -1,206 +1,273 @@
+"""The archive public remote API against an in-memory backend.
+
+Everything except the remote itself is real: sqlite records, the CAS, hashing.
+"""
+
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
-import subprocess
 from dataclasses import replace
 
 import pytest
 
 from pkit import archive
-from pkit.archive.cas import Entry, cas_path, hash_file
-from pkit.archive.rclone import RcloneBackend
-from pkit.archive.wayback import WaybackBackend
-from pkit.meta import db
+from pkit.archive.cas import cas_path
+from pkit.archive.errors import ArchiveError, InputError, TransientError
+from pkit.archive.remote import RemoteFile
+from pkit.meta.db import MetaDB
 from pkit.meta.models import File
-from pkit.wayback.client import CdxCapture, SaveOptions, SaveResult, WaybackClient
 
 PAYLOAD = b"pandora"
-SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
 LOCATION = "ia:x/v1.cbz"
 
 
-@pytest.fixture
-def tree(tmp_path):
-    (tmp_path / ".git").mkdir()
-    folder = tmp_path / "manga"
-    folder.mkdir()
-    (folder / "v1.cbz").write_bytes(PAYLOAD)
-    return tmp_path
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    return tmp_path / "records.db"
-
-
-@pytest.fixture
-def added(tree, db_path):
-    archive.add(tree / "manga", db_path=db_path)
-    return hash_file(cas_path(tree / ".git" / "pkit-archive", SHA256))
-
-
 def _stored(db_path, record_id) -> File:
-    """db.get returns Record | None; narrow once here instead of in every test."""
-    with db.session(db_path) as conn:
-        record = db.get(conn, record_id)
+    with MetaDB(db_path) as meta:
+        record = meta.get(record_id)
     assert isinstance(record, File)
     return record
 
 
-def _record_location(db_path, record_id, location) -> None:
-    with db.session(db_path) as conn:
-        record = db.get(conn, record_id)
-        assert isinstance(record, File)
-        db.put(conn, replace(record, locations=[location]))
+def _record_locations(db_path, record_id, locations: list[str]) -> None:
+    with MetaDB(db_path) as meta:
+        meta.put(replace(_stored(db_path, record_id), locations=locations))
 
 
-class FakeRclone:
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls: list[list[str]] = []
+class TestMatch:
+    def test_registers_known_hash(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
 
-    def __call__(self, args, *, timeout=None):
-        self.calls.append(list(args))
-        out = json.dumps(self.rows) if "lsjson" in args else ""
-        return subprocess.CompletedProcess(list(args), 0, out, "")
+        result = archive.match("ia:x", db_path=db_path)
 
+        assert result.matched == 1
+        assert _stored(db_path, added.record_id).locations == [LOCATION]
 
-def _row(hashes, path="v1.cbz"):
-    return {"Path": path, "Name": path, "Size": len(PAYLOAD), "IsDir": False, "Hashes": hashes}
+    def test_matches_by_alternate_hash(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"md5:{added.md5}",))])
 
+        assert archive.match("ia:x", db_path=db_path).matched == 1
 
-def test_match_registers_known_hash(tree, db_path, added, monkeypatch):
-    fake = FakeRclone([_row({"SHA-1": added.sha1})])
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", fake)
-
-    result = archive.match("ia:pandora-hearts", db_path=db_path)
-
-    assert result.matched == 1
-    assert _stored(db_path, added.record_id).locations == ["ia:pandora-hearts/v1.cbz"]
-
-
-def test_match_ignores_unknown_hashes(tree, db_path, added, monkeypatch):
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", FakeRclone([_row({"MD5": "0" * 32})]))
-    assert archive.match("ia:x", db_path=db_path).unknown == 1
-
-
-def test_copy_skips_present_content(tree, db_path, added, monkeypatch):
-    fake = FakeRclone([_row({"MD5": added.md5})])
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", fake)
-
-    result = archive.copy(tree / "manga", "ia:x", db_path=db_path)
-
-    assert result.copied == 0
-    assert result.present == 1
-    assert not any(call[1] == "copy" for call in fake.calls)
-
-
-def test_copy_uploads_missing(tree, db_path, added, monkeypatch):
-    fake = FakeRclone([])
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", fake)
-    monkeypatch.setattr(RcloneBackend, "list", lambda self: [])
-
-    result = archive.copy(tree / "manga", "ia:x", db_path=db_path)
-
-    assert result.copied == 1
-    assert any(call[1] == "copy" for call in fake.calls)
-
-
-def test_verify_reports_ok_and_missing(tree, db_path, added, monkeypatch):
-    _record_location(db_path, added.record_id, LOCATION)
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", FakeRclone([_row({"SHA-1": added.sha1})]))
-
-    result = archive.verify(tree / "manga" / "v1.cbz", db_path=db_path)
-
-    assert result.ok
-    assert [check.location for check in result.checks] == ["local", LOCATION]
-
-
-def test_get_restores_and_verifies(tree, db_path, added, monkeypatch):
-    item = tree / "manga" / "v1.cbz"
-    obj = cas_path(tree / ".git" / "pkit-archive", added.sha256)
-    _record_location(db_path, added.record_id, LOCATION)
-    obj.unlink()
-
-    def fake_fetch(self, location, dest):
-        dest.write_bytes(PAYLOAD)
-
-    monkeypatch.setattr(RcloneBackend, "fetch", fake_fetch)
-    result = archive.get(item, db_path=db_path)
-
-    assert result.location == LOCATION
-    assert obj.read_bytes() == PAYLOAD
-    assert item.read_bytes() == PAYLOAD
-
-
-def _capture(digest_bytes, timestamp, original="https://host/manga/v1.cbz", code="200"):
-    return CdxCapture(
-        original=original,
-        timestamp=timestamp,
-        digest=base64.b32encode(digest_bytes).decode(),
-        statuscode=code,
-        mimetype="application/octet-stream",
-    )
-
-
-class FakeWayback(WaybackClient):
-    """A real client with the transport methods stubbed: correct type, no network."""
-
-    def __init__(self, captures: list[CdxCapture]) -> None:
-        super().__init__(lock_file="", timeout=0.1)
-        self.captures = captures
-        self.saved: list[str] = []
-
-    def cdx(
-        self, url: str, *, match_type: str = "exact", limit: int | None = None
-    ) -> list[CdxCapture]:
-        return self.captures
-
-    def save_url(self, url: str, *, opts: SaveOptions | None = None) -> SaveResult:
-        self.saved.append(url)
-        return SaveResult(
-            url=url, archive_url=f"https://web.archive.org/web/9id_/{url}", job_id="j"
+    def test_counts_unknown_and_unhashed(self, repo, db_path, added, install_backend):
+        install_backend(
+            files=[
+                RemoteFile("ia:x/unknown", ("md5:" + "0" * 32,)),
+                RemoteFile("ia:x/opaque", ()),
+            ]
         )
 
+        result = archive.match("ia:x", db_path=db_path)
 
-def test_wayback_list_dedupes_oldest_capture(added):
-    digest = hashlib.sha1(PAYLOAD).digest()
-    captures = [
-        _capture(digest, "20260202000000"),
-        _capture(digest, "20260101000000"),
-        _capture(digest, "20260303000000", code="404"),
-    ]
-    with (
-        FakeWayback(captures) as client,
-        WaybackBackend("manga", base_url="https://host", client=client) as backend,
-    ):
-        files = backend.list()
+        assert result == archive.MatchResult(matched=0, unknown=1, no_hash=1)
+        assert _stored(db_path, added.record_id).locations == []
 
-    assert len(files) == 1
-    assert "20260101000000" in files[0].location
-    assert files[0].hashes == (f"sha1:{added.sha1}",)
+    def test_is_idempotent(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+
+        archive.match("ia:x", db_path=db_path)
+        archive.match("ia:x", db_path=db_path)
+
+        assert _stored(db_path, added.record_id).locations == [LOCATION]
 
 
-def test_wayback_copy_stages_and_saves(tree, added, monkeypatch):
-    staged: list[str] = []
-    monkeypatch.setattr(RcloneBackend, "put", lambda self, src, rel: staged.append(rel))
-    entry = Entry(path=tree / "manga" / "v1.cbz", relpath="v1.cbz", size=7, hashes=added)
+class TestCopy:
+    def test_uploads_missing_content(self, repo, db_path, added, install_backend):
+        backend = install_backend(remote="ia:x")
 
-    with FakeWayback([]) as client:
-        with WaybackBackend("manga", base_url="https://host", client=client) as backend:
-            out = list(backend.copy(tree / "manga", [entry]))
-        assert client.saved == ["https://host/manga/v1.cbz"]
+        result = archive.copy(repo / "manga", "ia:x", db_path=db_path)
 
-    assert staged == ["v1.cbz"]
-    assert out[0].location.startswith("wayback:https://web.archive.org/web/9id_/")
+        assert result.copied == 1
+        assert result.present == 0
+        assert result.locations == (LOCATION,)
+        assert backend.uploads == ["v1.cbz"]
+        assert backend.store[LOCATION] == PAYLOAD
+        assert _stored(db_path, added.record_id).locations == [LOCATION]
+
+    def test_skips_present_content(self, repo, db_path, added, install_backend):
+        backend = install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+
+        result = archive.copy(repo / "manga", "ia:x", db_path=db_path)
+
+        assert result.copied == 0
+        assert result.present == 1
+        assert backend.uploads == []
+        assert result.locations == ()
 
 
-def test_wayback_verify_unknown_when_not_indexed(added):
-    location = "wayback:https://web.archive.org/web/9id_/https://host/manga/v1.cbz"
-    with (
-        FakeWayback([]) as client,
-        WaybackBackend("manga", base_url="https://host", client=client) as backend,
-    ):
-        assert backend.verify(location, added) == "unknown"
+class TestVerify:
+    def test_reports_local_and_remote(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        _record_locations(db_path, added.record_id, [LOCATION])
+
+        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result.ok
+        assert [(check.location, check.status) for check in result.checks] == [
+            ("local", "ok"),
+            (LOCATION, "ok"),
+        ]
+
+    def test_local_mismatch_when_object_is_tampered(self, repo, db_path, added):
+        obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
+        obj.chmod(0o644)
+        obj.write_bytes(b"tampered")
+
+        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert not result.ok
+        assert result.checks[0] == archive.Check(location="local", status="mismatch")
+
+    def test_local_missing_after_drop(self, repo, db_path, added):
+        cas_path(repo / ".git" / "pkit-archive", added.sha256).unlink()
+
+        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result.checks == (archive.Check(location="local", status="missing"),)
+
+    def test_remote_only_and_local_only(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        _record_locations(db_path, added.record_id, [LOCATION])
+
+        remote_only = archive.verify(repo / "manga" / "v1.cbz", ["ia:x"], db_path=db_path)
+        local_only = archive.verify(repo / "manga" / "v1.cbz", ["local"], db_path=db_path)
+
+        assert [check.location for check in remote_only.checks] == [LOCATION]
+        assert [check.location for check in local_only.checks] == ["local"]
+
+    def test_remote_mismatch(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, ("sha1:" + "0" * 40,))])
+        _record_locations(db_path, added.record_id, [LOCATION])
+
+        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result.checks[-1].status == "mismatch"
+        assert not result.ok
+
+    def test_works_from_bare_hash_id(self, repo, db_path, added):
+        result = archive.verify(
+            added.record_id,
+            ["local"],
+            db_path=db_path,
+            cas_dir=repo / ".git" / "pkit-archive",
+        )
+
+        assert result.record_id == added.record_id
+        assert result.checks == (archive.Check(location="local", status="ok"),)
+
+    def test_unknown_record_is_input_error(self, repo, db_path):
+        with pytest.raises(InputError, match="run add first"):
+            archive.verify("sha256:" + "0" * 64, db_path=db_path)
+
+
+class TestDrop:
+    def test_deletes_local_copy_after_remote_proof(self, repo, db_path, added, install_backend):
+        backend = install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        archive.match("ia:x", db_path=db_path)
+
+        result = archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result == archive.DropResult(record_id=added.record_id, location=LOCATION)
+        assert not cas_path(repo / ".git" / "pkit-archive", added.sha256).exists()
+        assert (repo / "manga" / "v1.cbz").is_symlink()  # the name survives, dangling
+        assert backend.verify_calls == [LOCATION]
+
+    def test_tries_locations_until_one_verifies(self, repo, db_path, added, install_backend):
+        install_backend(
+            files=[
+                RemoteFile("ia:a/v1.cbz", ("sha1:" + "0" * 40,)),
+                RemoteFile("ia:b/v1.cbz", (f"sha1:{added.sha1}",)),
+            ]
+        )
+        _record_locations(db_path, added.record_id, ["ia:a/v1.cbz", "ia:b/v1.cbz"])
+
+        result = archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result.location == "ia:b/v1.cbz"
+
+    def test_refuses_when_nothing_verifies(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, ("sha1:" + "0" * 40,))])
+        _record_locations(db_path, added.record_id, [LOCATION])
+
+        with pytest.raises(ArchiveError, match="refusing to drop"):
+            archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+        assert cas_path(repo / ".git" / "pkit-archive", added.sha256).exists()
+
+    def test_reraises_transient_after_trying_all(self, repo, db_path, added, install_backend):
+        backend = install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        backend.error = TransientError("queue is full")
+        _record_locations(db_path, added.record_id, [LOCATION])
+
+        with pytest.raises(TransientError, match="queue is full"):
+            archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+        assert cas_path(repo / ".git" / "pkit-archive", added.sha256).exists()
+
+    def test_requires_local_copy(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        archive.match("ia:x", db_path=db_path)
+        cas_path(repo / ".git" / "pkit-archive", added.sha256).unlink()
+
+        with pytest.raises(InputError, match="no local copy"):
+            archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+
+
+class TestGet:
+    def test_restores_verified_copy(self, repo, db_path, added, install_backend):
+        install_backend(remote="ia:x")
+        archive.copy(repo / "manga", "ia:x", db_path=db_path)
+        obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
+        obj.unlink()
+
+        result = archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result == archive.GetResult(
+            record_id=added.record_id, location=LOCATION, path=str(obj)
+        )
+        assert obj.read_bytes() == PAYLOAD
+        assert obj.stat().st_mode & 0o777 == 0o444
+        assert (repo / "manga" / "v1.cbz").read_bytes() == PAYLOAD
+
+    def test_local_copy_short_circuits(self, repo, db_path, added, install_backend):
+        backend = install_backend(remote="ia:x")
+
+        result = archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
+
+        assert result.location == "local"
+        assert backend.uploads == []
+
+    def test_rejects_corrupted_download(self, repo, db_path, added, install_backend):
+        backend = install_backend(remote="ia:x")
+        archive.copy(repo / "manga", "ia:x", db_path=db_path)
+        obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
+        obj.unlink()
+        backend.store[LOCATION] = b"corrupted"
+
+        with pytest.raises(ArchiveError, match="could be fetched and verified"):
+            archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
+        assert not obj.exists()
+
+    def test_prefers_the_requested_remote(self, repo, db_path, added, install_backend):
+        install_backend(remote="ia:x")
+        archive.copy(repo / "manga", "ia:x", db_path=db_path)
+        _record_locations(db_path, added.record_id, ["ia:other/v1.cbz", LOCATION])
+        obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
+        obj.unlink()
+
+        result = archive.get(repo / "manga" / "v1.cbz", "ia:x", db_path=db_path)
+
+        assert result.location == LOCATION
+
+    def test_no_remote_copy_fails(self, repo, db_path, added, install_backend):
+        install_backend()
+        cas_path(repo / ".git" / "pkit-archive", added.sha256).unlink()
+
+        with pytest.raises(ArchiveError, match="could be fetched and verified"):
+            archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
+
+
+class TestRemoveLocation:
+    def test_removes_one_location(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        archive.match("ia:x", db_path=db_path)
+
+        record = archive.remove_location(repo / "manga" / "v1.cbz", LOCATION, db_path=db_path)
+
+        assert record.locations == []
+        assert _stored(db_path, added.record_id).locations == []

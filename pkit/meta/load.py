@@ -8,14 +8,14 @@ cycle protection and identifier-based deduplication.
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 from pkit.config import as_path
-from pkit.meta import config, db
+from pkit.meta import config
+from pkit.meta.db import MetaDB
 from pkit.meta.models import Record, type_name
 from pkit.meta.serialize import from_dict
 from pkit.meta.source import Plan, Source
@@ -47,13 +47,13 @@ def _load_repo(path: Path, *, db_path: str | Path | None) -> int:
     else:
         raise FileNotFoundError(f"no record repo at {path}")
     count = 0
-    with db.session(db_path) as conn:
+    with MetaDB(db_path) as db:
         for file in files:
             rows = json.loads(file.read_text(encoding="utf-8"))
             if isinstance(rows, dict):
                 rows = [rows]
             for row in rows:
-                db.put(conn, row)
+                db.put(row)
                 count += 1
     return count
 
@@ -75,14 +75,14 @@ def _select_plan(
 
 
 def _index_for(
-    conn: sqlite3.Connection,
+    db: MetaDB,
     model: type[Record],
     cache: dict[type[Record], dict[str, Record]],
 ) -> dict[str, Record]:
     index = cache.get(model)
     if index is None:
         index = {}
-        for record in db.find(conn, model):
+        for record in db.find(model):
             index[record.id] = record
             for token in record.identifiers:
                 index[token] = record
@@ -91,12 +91,12 @@ def _index_for(
 
 
 def _find_existing(
-    conn: sqlite3.Connection,
+    db: MetaDB,
     model: type[Record],
     tokens: Sequence[str],
     cache: dict[type[Record], dict[str, Record]],
 ) -> Record | None:
-    index = _index_for(conn, model, cache)
+    index = _index_for(db, model, cache)
     for token in tokens:
         if token in index:
             return index[token]
@@ -164,7 +164,7 @@ def _load_source(
     index_cache: dict[type[Record], dict[str, Record]] = {}
     imported = 0
 
-    with factory() as src, db.session(db_path) as conn:
+    with factory() as src, MetaDB(db_path) as db:
 
         def _import_key(key: str, *, expected: type[Record] | None = None) -> str | None:
             nonlocal imported
@@ -201,7 +201,7 @@ def _load_source(
             values = {name: extractor(item) for name, extractor in plan.fields.items()}
             canonical_id = f"{src.name}:{canon_key}"
             tokens = [canonical_id, *(values.get("identifiers") or ())]
-            existing = _find_existing(conn, plan.model, tokens, index_cache)
+            existing = _find_existing(db, plan.model, tokens, index_cache)
             record_id = existing.id if existing is not None else canonical_id
             provisional[key] = record_id
             provisional[canon_key] = record_id
@@ -217,8 +217,8 @@ def _load_source(
                 values[link_field] = child_ids
 
             record = _merge_record(plan.model, record_id, canonical_id, existing, values)
-            saved = db.put(conn, record)
-            index = _index_for(conn, plan.model, index_cache)
+            saved = db.put(record)
+            index = _index_for(db, plan.model, index_cache)
             index[saved.id] = saved
             for ident in saved.identifiers:
                 index[ident] = saved

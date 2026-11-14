@@ -46,12 +46,13 @@ pkit/
 ├── meta/
 │   ├── __main__.py      # python -m pkit.meta
 │   ├── cli.py           # dump / load / validate
-│   ├── config.py, db.py, models.py, serialize.py, sync.py
+│   ├── config.py, db.py, models.py, serialize.py
+│   ├── dump.py, load.py, source.py, wikidata.py
 │   └── migrations/      # SQL migrations
 ├── archive/
 │   ├── __main__.py      # python -m pkit.archive
 │   ├── cli.py           # add/fix/copy/match/verify/drop/get/forget/...
-│   └── cas.py, records.py, remote.py, rclone.py, wayback.py, errors.py
+│   └── cas.py, db.py, errors.py, remote.py, rclone.py, wayback.py
 └── wayback/
     ├── __main__.py      # python -m pkit.wayback
     ├── cli.py           # save (thin, argparse)
@@ -78,7 +79,8 @@ each `cli.py`, so all three stay in lockstep by construction.
 - Success returns structured dataclasses.
 - Failure raises typed exceptions — never `result.error` strings.
 - HTTP via `pkit.lib.http.HttpClient`; external commands via `pkit.lib.shell.run`.
-  Clients are context managers and closeable.
+  Clients are context managers and closeable. SDK classes accept an injected
+  `http=` (and `client=`) so tests can substitute a fake per instance.
 - No printing, no CLI concerns, no exit calls.
 
 ### CLI layer (thin)
@@ -185,18 +187,21 @@ implementation-detail names.
 
 ## 6. Dependencies
 
-Prefer: stdlib (argparse for CLIs), requests (HTTP), pytest, requests-mock.
-Do NOT add deps for: logging, configuration, validation, retry, schema
-enforcement, CLI generation, DI, rich output, progress bars, metrics.
-A dependency is accepted only if it removes significant code **and** is stable.
+Prefer: stdlib (argparse for CLIs), requests (HTTP), pytest. Do NOT add deps
+for: logging, configuration, validation, retry, schema enforcement, CLI
+generation, DI, rich output, progress bars, metrics, HTTP mocking. A
+dependency is accepted only if it removes significant code **and** is stable.
 
 ---
 
 ## 7. Testing
 
 pytest. Fixtures for shared setup. Small focused unit tests. A few integration
-tests. requests-mock for HTTP. CLI tests call `main([...])` directly with
-capsys and faked stdin (`run_cli` in conftest.py).
+tests. HTTP is faked at the transport: `FakeHttpClient` (in `tests/conftest.py`)
+stands in for `HttpClient` per instance, and a real local `http.server` covers
+transport-level behavior with no mock at all. rclone is faked at `shell.run`.
+sqlite and the filesystem are always real (`tmp_path`). CLI tests call
+`main([...])` directly with capsys and faked stdin (`run_cli` in conftest.py).
 
 **Test:** stdin behavior, option coercion, CLI success output, CLI exit codes,
 stderr messages, SDK exception mapping, SDK success result shape, HTTP error
@@ -251,3 +256,4 @@ simplify scope.
 - Makes sense in five years? Easy to delete?
 
 **When in doubt: smaller, simpler, more boring.**
+

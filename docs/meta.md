@@ -30,19 +30,21 @@ and are rebuilt on load.
 ## Library
 
 ```python
-from pkit.meta import db, sync
+from pkit.meta import dump, load
+from pkit.meta.db import MetaDB
 from pkit.meta.models import Book, File, Person
 
-with db.session() as conn:
-    db.put(conn, Book(id="b1", title="Pandora Hearts", author_ids=["p1"]))
-    record = db.get(conn, "b1")
-    records = db.find(conn, Book)  # newest first
-    issues = db.validate(conn)  # orphans, duplicate ids
+with MetaDB() as db:
+    db.put(Book(id="b1", title="Pandora Hearts", author_ids=["p1"]))
+    record = db.get("b1")
+    records = db.find(Book)  # newest first
+    issues = db.validate()  # orphans, duplicate ids
 
-sync.dump()  # records -> JSON repo
-sync.load()  # JSON repo -> records
+dump.dump("~/records")  # records -> JSON repo
+load.load("~/records")  # JSON repo -> records
 ```
 
 `put` accepts a record or a plain mapping; `get`/`find` return typed
 records. `File.id` is `sha256:<hex>` so re-adding the same bytes is the
-same row.
+same row. `db_path` defaults to `[meta] db_path` / `$PKIT_META_DB_PATH`.
+

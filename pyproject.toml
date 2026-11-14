@@ -16,7 +16,6 @@ dependencies = [
 dev = [
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
-    "requests-mock>=1.12.1",
     "ty>=0.0.94",
     "ruff>=0.17.3",
 ]
@@ -60,3 +59,4 @@ known-first-party = ["pkit"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+

@@ -12,7 +12,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from pkit.config import as_path
-from pkit.meta import config, db
+from pkit.meta import config
+from pkit.meta.db import MetaDB
 from pkit.meta.models import stored_models
 
 __all__ = ["dump"]
@@ -32,9 +33,9 @@ def dump(
     target_db = db_path or cfg.db_path
     count = 0
     repo.mkdir(parents=True, exist_ok=True)
-    with db.session(target_db) as conn:
+    with MetaDB(target_db) as db:
         for cls in stored_models():
-            rows = [asdict(record) for record in db.find(conn, cls)]
+            rows = [asdict(record) for record in db.find(cls)]
             rows.sort(key=lambda row: row["id"])
             file = repo / f"{cls.table}.json"
             tmp = file.with_name(file.name + ".tmp")

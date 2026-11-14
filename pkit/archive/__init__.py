@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pkit import config
-from pkit.archive import records
 from pkit.archive.cas import (
     Entry,
     abs_path,
@@ -31,11 +30,11 @@ from pkit.archive.cas import (
     set_readonly,
     walk_files,
 )
+from pkit.archive.db import ArchiveDB, hashes_of
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import WAYBACK, RemoteFile, Status, selects
 from pkit.archive.wayback import WaybackBackend
-from pkit.meta import db
 from pkit.meta.models import File
 
 __all__ = [
@@ -162,7 +161,7 @@ def add(
     if root == cas or cas in root.parents:
         raise InputError(f"cannot add files inside the CAS directory: {root}")
     added = relinked = skipped = 0
-    with db.session(db_path) as conn:
+    with ArchiveDB(db_path) as db:
         for item in walk_files(root):
             named = link_hash(item)
             if item.is_symlink():
@@ -170,10 +169,10 @@ def add(
                 if obj is None or not obj.exists():
                     skipped += 1
                     continue
-                stored = db.get(conn, f"sha256:{named}")
+                stored = db.get(f"sha256:{named}")
                 if not isinstance(stored, File) or not stored.identifiers:
-                    records.file_record(conn, hash_file(obj), obj.stat().st_size)
-                    conn.commit()
+                    db.file_record(hash_file(obj), obj.stat().st_size)
+                    db.commit()
                 if make_link(item, obj):
                     relinked += 1
                 continue
@@ -181,8 +180,8 @@ def add(
             hashes = hash_file(item)
             obj = ingest(item, cas, hashes)
             make_link(item, obj)
-            records.file_record(conn, hashes, size)
-            conn.commit()
+            db.file_record(hashes, size)
+            db.commit()
             added += 1
     return AddResult(added=added, relinked=relinked, skipped=skipped)
 
@@ -228,11 +227,11 @@ def drop(
     obj = cas_path(cas, record_id.removeprefix("sha256:"))
     if not obj.exists():
         raise InputError(f"no local copy of {record_id}")
-    with db.session(db_path) as conn:
-        record = records.load_file(conn, record_id)
+    with ArchiveDB(db_path) as db:
+        record = db.load_file(record_id)
         if not record.locations:
             raise ArchiveError(f"{record_id} has no remote copy; refusing to drop")
-        hashes = records.hashes_of(record)
+        hashes = hashes_of(record)
         has_wayback = any(loc.startswith(WAYBACK) for loc in record.locations)
         url = _wayback_url(config_path) if has_wayback else ""
         transient: TransientError | None = None
@@ -270,7 +269,7 @@ def forget(
     cas = find_cas(root, cas_dir)
     forgotten: set[str] = set()
     kept: list[str] = []
-    with db.session(db_path) as conn:
+    with ArchiveDB(db_path) as db:
         for item in walk_files(root):
             named = link_hash(item)
             if named is None:
@@ -279,7 +278,7 @@ def forget(
                 kept.append(str(item))
                 continue
             record_id = f"sha256:{named}"
-            if db.delete(conn, record_id):
+            if db.delete(record_id):
                 forgotten.add(record_id)
     return ForgetResult(forgotten=tuple(sorted(forgotten)), kept=tuple(kept))
 
@@ -292,8 +291,8 @@ def match(
 ) -> MatchResult:
     """Register remote copies of known content. One listing, no transfer."""
     url = _wayback_url(config_path) if remote.startswith(WAYBACK) else ""
-    with db.session(db_path) as conn:
-        index = records.hash_index(conn)
+    with ArchiveDB(db_path) as db:
+        index = db.hash_index()
         matched = unknown = no_hash = 0
         with _backend(remote, url) as backend:
             for item in backend.list():
@@ -305,9 +304,9 @@ def match(
                     unknown += 1
                     continue
                 for record_id in sorted(ids):
-                    records.register(conn, record_id, [item.location])
+                    db.register(record_id, [item.location])
                     matched += 1
-                conn.commit()
+                db.commit()
     return MatchResult(matched=matched, unknown=unknown, no_hash=no_hash)
 
 
@@ -328,19 +327,19 @@ def copy(
     cas = find_cas(root, cas_dir)
     base = root if root.is_dir() and not root.is_symlink() else root.parent
     url = _wayback_url(config_path) if remote.startswith(WAYBACK) else ""
-    with db.session(db_path) as conn:
+    with ArchiveDB(db_path) as db:
         entries: list[Entry] = []
         for item in walk_files(root):
             named = link_hash(item)
             if named is None or not cas_path(cas, named).exists():
                 continue
-            record = records.load_file(conn, f"sha256:{named}")
+            record = db.load_file(f"sha256:{named}")
             entries.append(
                 Entry(
                     path=item,
                     relpath=Path(os.path.relpath(item, base)).as_posix(),
                     size=record.size,
-                    hashes=records.hashes_of(record),
+                    hashes=hashes_of(record),
                 )
             )
         registered: set[str] = set()
@@ -353,10 +352,10 @@ def copy(
             for item in backend.copy(root, missing):
                 ids = {wanted[token] for token in item.hashes if token in wanted}
                 for record_id in sorted(ids):
-                    records.register(conn, record_id, [item.location])
+                    db.register(record_id, [item.location])
                     registered.add(item.location)
                 if ids:
-                    conn.commit()
+                    db.commit()
     return CopyResult(
         copied=len(missing),
         present=len(entries) - len(missing),
@@ -384,9 +383,9 @@ def verify(
         cas = None
     url = _wayback_url(config_path)
     checks: list[Check] = []
-    with db.session(db_path) as conn:
-        record = records.load_file(conn, record_id)
-        hashes = records.hashes_of(record)
+    with ArchiveDB(db_path) as db:
+        record = db.load_file(record_id)
+        hashes = hashes_of(record)
         if not remotes or "local" in remotes:
             if cas is None:
                 local_status: Status = "unknown"
@@ -428,9 +427,9 @@ def get(
         and target != cas
     )
     url = _wayback_url(config_path)
-    with db.session(db_path) as conn:
-        record = records.load_file(conn, record_id)
-        hashes = records.hashes_of(record)
+    with ArchiveDB(db_path) as db:
+        record = db.load_file(record_id)
+        hashes = hashes_of(record)
         obj = cas_path(cas, hashes.sha256)
         if obj.exists():
             if is_tree_path and (not target.exists() or target.is_symlink()):
@@ -463,8 +462,8 @@ def get(
                 if not dest.exists() or hash_file(dest).sha256 != hashes.sha256:
                     continue
                 ingest(dest, cas, hashes)
-            records.register(conn, record_id, [location])
-            conn.commit()
+            db.register(record_id, [location])
+            db.commit()
             if is_tree_path and (not target.exists() or target.is_symlink()):
                 make_link(target, obj)
             return GetResult(record_id=record_id, location=location, path=str(obj))
@@ -481,5 +480,5 @@ def remove_location(
 ) -> File:
     """Drop one recorded remote copy after a verify report."""
     record_id = _record_id(file)
-    with db.session(db_path) as conn:
-        return records.remove_location(conn, record_id, location)
+    with ArchiveDB(db_path) as db:
+        return db.remove_location(record_id, location)

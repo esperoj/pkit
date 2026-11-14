@@ -1,39 +1,31 @@
-"""Record storage.
+"""Record storage: one class over one sqlite connection.
 
-Every function takes a connection first, so this module can later be split into
-sql / db / read / write / check without changing a single call site.
+MetaDB owns connect + migrate + commit/rollback + close, so no caller threads
+a raw connection through its code. It is a context manager:
+
+    with MetaDB(path) as db:
+        db.put(Book(id="b1", title="..."))
+        record = db.get("b1")
 
 Input rule: lenient at the edge (Record or mapping in, str | Path | None for
-paths), strict inside, one output type. In this module `str` always means a
-record id — never a JSON payload.
+paths), strict inside, one output type. Here `str` always means a record id —
+never a JSON payload.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Generator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from pkit.meta import config as meta_config
 from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models, type_name
 from pkit.meta.serialize import from_dict, from_json
 
-__all__ = [
-    "connect",
-    "delete",
-    "exists",
-    "find",
-    "get",
-    "get_or_create",
-    "migrate",
-    "put",
-    "session",
-    "validate",
-]
+__all__ = ["MetaDB"]
 
 
 def _q(name: str) -> str:
@@ -78,41 +70,12 @@ def _values(record: Record, cls: type[Record]) -> list[Any]:
     return values
 
 
-def connect(path: str | Path | None = None) -> sqlite3.Connection:
-    """Raw connection; the caller owns it. Foreign keys OFF so import order is free."""
-    path = Path(path if path is not None else meta_config.load().db_path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = OFF")
-    return conn
-
-
-@contextmanager
-def session(
-    path: str | Path | None = None, *, migrations_dir: str | Path | None = None
-) -> Generator[sqlite3.Connection]:
-    """The one entry point: connect, migrate, commit (or roll back), close."""
-    conn = connect(path)
-    try:
-        migrate(conn, migrations_dir)
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def migrate(conn: sqlite3.Connection, directory: str | Path | None = None) -> None:
+def _migrate(conn: sqlite3.Connection, directory: str | Path) -> None:
     """Apply each .sql once, atomically with its _migrations row.
 
     Files must not contain BEGIN/COMMIT and must end statements with ';'.
     """
-    directory = Path(
-        directory if directory is not None else meta_config.load().migrations_dir
-    ).expanduser()
+    directory = Path(directory).expanduser()
     if not directory.is_dir():
         return
     conn.execute(
@@ -135,141 +98,183 @@ def migrate(conn: sqlite3.Connection, directory: str | Path | None = None) -> No
         )
 
 
-def put(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) -> Record:
-    """Insert or update by id, then re-sync link rows.
+class MetaDB:
+    """The record database: sqlite tables behind typed record methods.
 
-    Accepts a Record or a mapping (parsed via from_dict); always returns Record.
+    Context-manager contract: commit on success, roll back on error, always
+    close. `commit()` stays public for callers that need intermediate
+    durability inside one long session (archive.add commits per file).
+    Foreign keys are OFF so import order is free.
     """
-    record = _prepare(record)
-    cls = type(record)
-    cols = ["id", "slug", *cls.scalar_fields, *cls.json_fields]
-    conn.execute(
-        f"INSERT INTO {_q(cls.table)} ({', '.join(map(_q, cols))}) "
-        f"VALUES ({', '.join('?' * len(cols))}) ON CONFLICT(id) DO UPDATE SET "
-        + ", ".join(f"{_q(c)} = excluded.{_q(c)}" for c in cols if c != "id"),
-        _values(record, cls),
-    )
-    for link in cls.links:
-        conn.execute(
-            f"DELETE FROM {_q(link.table)} WHERE {_q(link.parent_column)} = ?",
-            (record.id,),
-        )
-        conn.executemany(
-            f"INSERT OR IGNORE INTO {_q(link.table)} "
-            f"({_q(link.parent_column)}, {_q(link.child_column)}) VALUES (?, ?)",
-            [(record.id, c) for c in (getattr(record, link.key) or []) if isinstance(c, str) and c],
-        )
-    return record
 
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        migrations_dir: str | Path | None = None,
+    ) -> None:
+        cfg = meta_config.load()
+        target = Path(path if path is not None else cfg.db_path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(target))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        _migrate(self.conn, migrations_dir if migrations_dir is not None else cfg.migrations_dir)
 
-def get_or_create(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) -> Record:
-    """Return the stored record if its id exists in this type's table, else insert.
+    def close(self) -> None:
+        """Close the connection."""
+        self.conn.close()
 
-    One query; own-table semantics preserved (a cross-type id collision still
-    inserts, and validate() will flag it).
-    """
-    record = _prepare(record)
-    cls = type(record)
-    row = conn.execute(
-        f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
-        (record.id,),
-    ).fetchone()
-    return from_json(row["payload"]) if row is not None else put(conn, record)
+    def __enter__(self) -> Self:
+        return self
 
-
-def get(conn: sqlite3.Connection, record_id: str) -> Record | None:
-    """Fetch one record by id across all known types."""
-    for cls in stored_models():
-        row = conn.execute(
-            f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
-            (record_id,),
-        ).fetchone()
-        if row is not None:
-            return from_json(row["payload"])
-    return None
-
-
-def find(
-    conn: sqlite3.Connection,
-    record_type: str | type[Record] | None = None,
-    *,
-    limit: int | None = None,
-    offset: int = 0,
-) -> list[Record]:
-    """All records of a type (or all types), newest first.
-
-    record_type accepts a type name ("note") or the class (Note).
-    Unknown types raise ValueError listing the known types.
-    """
-    if isinstance(record_type, type):
-        if not issubclass(record_type, Record):
-            raise TypeError(f"not a Record class: {record_type!r}")
-        record_type = type_name(record_type)
-    if record_type is not None and record_type not in RECORD_TYPES:
-        known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
-        raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
-    models = (RECORD_TYPES[record_type],) if record_type is not None else stored_models()
-    models = tuple(cls for cls in models if cls.table)
-    if not models:
-        return []
-    union = " UNION ALL ".join(
-        f"SELECT {_payload_sql(cls)} AS payload, updated_at FROM {_q(cls.table)}" for cls in models
-    )
-    sql = f"SELECT payload FROM ({union}) ORDER BY updated_at DESC"
-    params: list[Any] = []
-    if limit is not None or offset:
-        sql += " LIMIT ? OFFSET ?"
-        params = [limit if limit is not None else -1, offset]
-    return [from_json(row["payload"]) for row in conn.execute(sql, params)]
-
-
-def exists(conn: sqlite3.Connection, record_id: str) -> bool:
-    """Cheap presence check: no payload build, no JSON parse."""
-    for cls in stored_models():
-        row = conn.execute(
-            f"SELECT 1 FROM {_q(cls.table)} WHERE id = ? LIMIT 1", (record_id,)
-        ).fetchone()
-        if row is not None:
-            return True
-    return False
-
-
-def delete(conn: sqlite3.Connection, record_id: str) -> bool:
-    """Hard-delete, plus every link row referencing the id."""
-    found = False
-    for cls in stored_models():
-        cur = conn.execute(f"DELETE FROM {_q(cls.table)} WHERE id = ?", (record_id,))
-        found |= bool(cur.rowcount)
-        for link in cls.links:
-            conn.execute(
-                f"DELETE FROM {_q(link.table)} "
-                f"WHERE {_q(link.parent_column)} = ? OR {_q(link.child_column)} = ?",
-                (record_id, record_id),
-            )
-    return found
-
-
-def validate(conn: sqlite3.Connection) -> list[str]:
-    """Orphan link parents/children, and globally duplicate record ids."""
-    issues: list[str] = []
-    models = stored_models()
-    for cls in models:
-        for link in cls.links:
-            for col, ref in (
-                (link.parent_column, cls.table),
-                (link.child_column, link.child_table),
-            ):
-                rows = conn.execute(
-                    f"SELECT {_q(col)} FROM {_q(link.table)} "
-                    f"WHERE NOT EXISTS (SELECT 1 FROM {_q(ref)} WHERE id = {_q(link.table)}.{_q(col)})"
-                )
-                issues.extend(f"{link.table}.{col} {row[0]!r} does not exist" for row in rows)
-    seen: dict[str, str] = {}
-    for cls in models:
-        for row in conn.execute(f"SELECT id FROM {_q(cls.table)}"):
-            rid = row["id"]
-            if rid in seen:
-                issues.append(f"duplicate record id {rid!r} in {seen[rid]!r} and {cls.table!r}")
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        try:
+            if exc_type is None:
+                self.conn.commit()
             else:
-                seen[rid] = cls.table
-    return issues
+                self.conn.rollback()
+        finally:
+            self.conn.close()
+
+    def commit(self) -> None:
+        """Persist writes so far; the context exit commits the remainder."""
+        self.conn.commit()
+
+    def put(self, record: Record | Mapping[str, Any]) -> Record:
+        """Insert or update by id, then re-sync link rows.
+
+        Accepts a Record or a mapping (parsed via from_dict); always returns Record.
+        """
+        record = _prepare(record)
+        cls = type(record)
+        cols = ["id", "slug", *cls.scalar_fields, *cls.json_fields]
+        self.conn.execute(
+            f"INSERT INTO {_q(cls.table)} ({', '.join(map(_q, cols))}) "
+            f"VALUES ({', '.join('?' * len(cols))}) ON CONFLICT(id) DO UPDATE SET "
+            + ", ".join(f"{_q(c)} = excluded.{_q(c)}" for c in cols if c != "id"),
+            _values(record, cls),
+        )
+        for link in cls.links:
+            self.conn.execute(
+                f"DELETE FROM {_q(link.table)} WHERE {_q(link.parent_column)} = ?",
+                (record.id,),
+            )
+            self.conn.executemany(
+                f"INSERT OR IGNORE INTO {_q(link.table)} "
+                f"({_q(link.parent_column)}, {_q(link.child_column)}) VALUES (?, ?)",
+                [
+                    (record.id, c)
+                    for c in (getattr(record, link.key) or [])
+                    if isinstance(c, str) and c
+                ],
+            )
+        return record
+
+    def get_or_create(self, record: Record | Mapping[str, Any]) -> Record:
+        """Return the stored record if its id exists in this type's table, else insert.
+
+        One query; own-table semantics preserved (a cross-type id collision still
+        inserts, and validate() will flag it).
+        """
+        record = _prepare(record)
+        cls = type(record)
+        row = self.conn.execute(
+            f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
+            (record.id,),
+        ).fetchone()
+        return from_json(row["payload"]) if row is not None else self.put(record)
+
+    def get(self, record_id: str) -> Record | None:
+        """Fetch one record by id across all known types."""
+        for cls in stored_models():
+            row = self.conn.execute(
+                f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
+                (record_id,),
+            ).fetchone()
+            if row is not None:
+                return from_json(row["payload"])
+        return None
+
+    def find(
+        self,
+        record_type: str | type[Record] | None = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Record]:
+        """All records of a type (or all types), newest first.
+
+        record_type accepts a type name ("note") or the class (Note).
+        Unknown types raise ValueError listing the known types.
+        """
+        if isinstance(record_type, type):
+            if not issubclass(record_type, Record):
+                raise TypeError(f"not a Record class: {record_type!r}")
+            record_type = type_name(record_type)
+        if record_type is not None and record_type not in RECORD_TYPES:
+            known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
+            raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
+        models = (RECORD_TYPES[record_type],) if record_type is not None else stored_models()
+        models = tuple(cls for cls in models if cls.table)
+        if not models:
+            return []
+        union = " UNION ALL ".join(
+            f"SELECT {_payload_sql(cls)} AS payload, updated_at FROM {_q(cls.table)}"
+            for cls in models
+        )
+        sql = f"SELECT payload FROM ({union}) ORDER BY updated_at DESC"
+        params: list[Any] = []
+        if limit is not None or offset:
+            sql += " LIMIT ? OFFSET ?"
+            params = [limit if limit is not None else -1, offset]
+        return [from_json(row["payload"]) for row in self.conn.execute(sql, params)]
+
+    def exists(self, record_id: str) -> bool:
+        """Cheap presence check: no payload build, no JSON parse."""
+        for cls in stored_models():
+            row = self.conn.execute(
+                f"SELECT 1 FROM {_q(cls.table)} WHERE id = ? LIMIT 1", (record_id,)
+            ).fetchone()
+            if row is not None:
+                return True
+        return False
+
+    def delete(self, record_id: str) -> bool:
+        """Hard-delete, plus every link row referencing the id."""
+        found = False
+        for cls in stored_models():
+            cur = self.conn.execute(f"DELETE FROM {_q(cls.table)} WHERE id = ?", (record_id,))
+            found |= bool(cur.rowcount)
+            for link in cls.links:
+                self.conn.execute(
+                    f"DELETE FROM {_q(link.table)} "
+                    f"WHERE {_q(link.parent_column)} = ? OR {_q(link.child_column)} = ?",
+                    (record_id, record_id),
+                )
+        return found
+
+    def validate(self) -> list[str]:
+        """Orphan link parents/children, and globally duplicate record ids."""
+        issues: list[str] = []
+        models = stored_models()
+        for cls in models:
+            for link in cls.links:
+                for col, ref in (
+                    (link.parent_column, cls.table),
+                    (link.child_column, link.child_table),
+                ):
+                    rows = self.conn.execute(
+                        f"SELECT {_q(col)} FROM {_q(link.table)} "
+                        f"WHERE NOT EXISTS (SELECT 1 FROM {_q(ref)} WHERE id = {_q(link.table)}.{_q(col)})"
+                    )
+                    issues.extend(f"{link.table}.{col} {row[0]!r} does not exist" for row in rows)
+        seen: dict[str, str] = {}
+        for cls in models:
+            for row in self.conn.execute(f"SELECT id FROM {_q(cls.table)}"):
+                rid = row["id"]
+                if rid in seen:
+                    issues.append(f"duplicate record id {rid!r} in {seen[rid]!r} and {cls.table!r}")
+                else:
+                    seen[rid] = cls.table
+        return issues
