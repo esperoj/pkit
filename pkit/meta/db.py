@@ -12,8 +12,6 @@ paths), strict inside, one output type. Here `str` always means a record id —
 never a JSON payload.
 """
 
-from __future__ import annotations
-
 import json
 import sqlite3
 from collections.abc import Mapping

@@ -6,8 +6,6 @@ modules and never parsed at import time: call get_version() only where the
 version is actually needed, such as CLI --version output.
 """
 
-from __future__ import annotations
-
 import tomllib
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version

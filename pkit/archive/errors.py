@@ -4,8 +4,6 @@ TransientError is separate because verify must never treat a network hiccup
 as proof that a remote copy is gone.
 """
 
-from __future__ import annotations
-
 __all__ = ["ArchiveError", "InputError", "TransientError"]
 
 

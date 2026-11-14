@@ -4,8 +4,6 @@ The CLI talks to a genuine http.server through --proxy, so authentication
 headers, form bodies and status mapping all cross the wire for real.
 """
 
-from __future__ import annotations
-
 import json
 from urllib.parse import parse_qs
 

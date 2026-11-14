@@ -3,8 +3,6 @@
 Callers map HttpError onto their own taxonomy; this module stays generic.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any, Self
 

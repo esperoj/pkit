@@ -9,8 +9,6 @@ Tool options come before the command; save options after it:
     pkit wayback --key K --secret S save --json URL
 """
 
-from __future__ import annotations
-
 import argparse
 import dataclasses
 from collections.abc import Sequence

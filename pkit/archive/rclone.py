@@ -4,8 +4,6 @@ rclone owns authentication, retries and transfer decisions. pkit only lists,
 copies and checks hashes.
 """
 
-from __future__ import annotations
-
 import json
 import tempfile
 from collections.abc import Iterator, Sequence

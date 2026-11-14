@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import asdict, fields
 from json import dumps, loads
 from typing import Any

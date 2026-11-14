@@ -1,7 +1,5 @@
 """Tests for lazy version resolution."""
 
-from __future__ import annotations
-
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path

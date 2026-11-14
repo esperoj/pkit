@@ -5,8 +5,6 @@ maps one fetched item onto a Record subclass (scalar/JSON fields plus LinkRefs
 to child items) without per-type import boilerplate.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import TracebackType

@@ -8,8 +8,6 @@ Each tool also runs standalone, three ways:
     pkit-meta | python -m pkit.meta     (same for wayback and archive)
 """
 
-from __future__ import annotations
-
 import sys
 from collections.abc import Sequence
 

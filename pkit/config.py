@@ -1,7 +1,5 @@
 """Generic config: TOML file + environment, one precedence rule for all of pkit."""
 
-from __future__ import annotations
-
 import os
 import tomllib
 from collections.abc import Callable

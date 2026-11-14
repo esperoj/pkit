@@ -3,8 +3,6 @@
 Everything except the remote itself is real: sqlite records, the CAS, hashing.
 """
 
-from __future__ import annotations
-
 from dataclasses import replace
 
 import pytest

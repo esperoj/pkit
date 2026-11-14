@@ -6,8 +6,6 @@ All HTTP goes through pkit.lib.http so the whole toolkit shares one
 session, timeout and error type.
 """
 
-from __future__ import annotations
-
 import fcntl
 import os
 import time

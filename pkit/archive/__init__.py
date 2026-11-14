@@ -8,8 +8,6 @@ Three layers, three truths:
 Library only: results are dataclasses, failures raise typed exceptions.
 """
 
-from __future__ import annotations
-
 import os
 import tempfile
 from collections.abc import Sequence

@@ -1,7 +1,5 @@
 """BusyBox dispatcher and the three entry-point modes of each tool."""
 
-from __future__ import annotations
-
 import runpy
 import sys
 import tomllib

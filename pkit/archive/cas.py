@@ -5,8 +5,6 @@ target basename is the sha256 of its content, so names, directory levels and
 even the CAS root can change without losing identity.
 """
 
-from __future__ import annotations
-
 import hashlib
 import os
 import re

@@ -14,8 +14,6 @@ Paths and remotes come from the tree; the database and CAS root come from
 config ([meta] db_path, [archive] wayback_url) and their env overrides.
 """
 
-from __future__ import annotations
-
 import argparse
 from collections.abc import Callable, Sequence
 from typing import Any

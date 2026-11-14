@@ -3,8 +3,6 @@
 One in-memory remote; sqlite, the CAS, hashing and the CLI are all real.
 """
 
-from __future__ import annotations
-
 import json
 import os
 

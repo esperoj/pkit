@@ -11,8 +11,6 @@ Only boundaries pkit does not own are faked: the network transport, the
 rclone binary, and remote backends. sqlite and the filesystem stay real.
 """
 
-from __future__ import annotations
-
 import http.server
 import json
 import subprocess

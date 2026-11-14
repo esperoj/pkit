@@ -1,7 +1,5 @@
 """The meta load URL pipeline: CLI -> source -> sqlite, with only the wire faked."""
 
-from __future__ import annotations
-
 import pytest
 
 from pkit.lib.cli import EXIT_TEMPFAIL

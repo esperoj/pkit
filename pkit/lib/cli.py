@@ -4,8 +4,6 @@ This module is intentionally generic. Tool-specific option coercion belongs
 in the tool's own cli module. Only stdlib argparse is used here.
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import sys

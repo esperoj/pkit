@@ -4,8 +4,6 @@ Borrows the ergonomics of sh/execa (capture and check by default) without
 their magic: no shell strings, no attribute DSL, no piping language.
 """
 
-from __future__ import annotations
-
 import subprocess
 from collections.abc import Sequence
 

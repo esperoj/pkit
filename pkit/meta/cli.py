@@ -5,8 +5,6 @@ pkit meta load [SOURCE]    # JSON repo or source URL -> database
 pkit meta validate         # orphan link rows, duplicate ids
 """
 
-from __future__ import annotations
-
 import argparse
 from collections.abc import Sequence
 

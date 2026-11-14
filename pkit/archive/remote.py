@@ -5,8 +5,6 @@ A location is an opaque, self-describing string:
   wayback:https://web.archive.org/web/<ts>id_/https://host/folder/vol1.cbz
 """
 
-from __future__ import annotations
-
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal

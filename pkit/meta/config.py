@@ -1,7 +1,5 @@
 """Meta settings: PKIT_META_* env > TOML [meta] > defaults under the core data dir."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 

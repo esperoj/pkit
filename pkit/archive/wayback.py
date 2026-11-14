@@ -5,8 +5,6 @@ timestamp, so the same URL may hold several different contents over time.
 Staging (rclone "pkit-archive:") is transport only and is never registered.
 """
 
-from __future__ import annotations
-
 import base64
 import binascii
 from collections.abc import Iterator, Sequence

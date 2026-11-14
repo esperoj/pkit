@@ -6,8 +6,6 @@ whole rows, so every write here is a read-merge-write to preserve previously
 recorded locations.
 """
 
-from __future__ import annotations
-
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import cast
