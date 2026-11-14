@@ -14,7 +14,7 @@ from typing import Any
 from pkit.config import as_path
 from pkit.meta import config
 from pkit.meta.db import MetaDB
-from pkit.meta.models import Record, type_name
+from pkit.meta.models import Record, new_id, type_name
 from pkit.meta.serialize import from_dict
 from pkit.meta.source import Plan, Source
 from pkit.meta.wikidata import WikidataSource
@@ -72,35 +72,6 @@ def _select_plan(
     return matched[0] if matched else None
 
 
-def _index_for(
-    db: MetaDB,
-    model: type[Record],
-    cache: dict[type[Record], dict[str, Record]],
-) -> dict[str, Record]:
-    index = cache.get(model)
-    if index is None:
-        index = {}
-        for record in db.find(model):
-            index[record.id] = record
-            for token in record.identifiers:
-                index[token] = record
-        cache[model] = index
-    return index
-
-
-def _find_existing(
-    db: MetaDB,
-    model: type[Record],
-    tokens: Sequence[str],
-    cache: dict[type[Record], dict[str, Record]],
-) -> Record | None:
-    index = _index_for(db, model, cache)
-    for token in tokens:
-        if token in index:
-            return index[token]
-    return None
-
-
 def _dedupe(items: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
 
@@ -119,7 +90,7 @@ def _merge_record(
     }
     existing_ids = existing.identifiers if existing is not None else ()
     incoming_ids = values.get("identifiers") or ()
-    payload["identifiers"] = sorted({*existing_ids, canonical_id, *incoming_ids} - {record_id})
+    payload["identifiers"] = sorted({*existing_ids, canonical_id, *incoming_ids} - {""})
 
     existing_extra = existing.extra if existing is not None else {}
     incoming_extra = values.get("extra") or {}
@@ -155,11 +126,11 @@ def _load_source(
     root_key: str,
     *,
     db_path: str | Path | None,
+    refresh: bool = False,
 ) -> int:
     resolved: dict[str, str] = {}
     provisional: dict[str, str] = {}
     visiting: set[str] = set()
-    index_cache: dict[type[Record], dict[str, Record]] = {}
     imported = 0
 
     with factory() as src, MetaDB(db_path) as db:
@@ -170,6 +141,11 @@ def _load_source(
                 return resolved[key]
             if key in visiting:
                 return provisional.get(key)
+            if not refresh:
+                existing_rows = db.find(expected, identifier=f"{src.name}:{key}")
+                if existing_rows:
+                    resolved[key] = existing_rows[0].id
+                    return existing_rows[0].id
             visiting.add(key)
 
             item = src.fetch(key, expected=expected)
@@ -194,13 +170,21 @@ def _load_source(
             if canon_key != key and canon_key in visiting:
                 visiting.discard(key)
                 return provisional.get(canon_key)
+            if not refresh and canon_key != key:
+                existing_rows = db.find(plan.model, identifier=f"{src.name}:{canon_key}")
+                if existing_rows:
+                    visiting.discard(key)
+                    resolved[key] = existing_rows[0].id
+                    resolved[canon_key] = existing_rows[0].id
+                    return existing_rows[0].id
             visiting.add(canon_key)
 
             values = {name: extractor(item) for name, extractor in plan.fields.items()}
             canonical_id = f"{src.name}:{canon_key}"
             tokens = [canonical_id, *(values.get("identifiers") or ())]
-            existing = _find_existing(db, plan.model, tokens, index_cache)
-            record_id = existing.id if existing is not None else canonical_id
+            matches = db.find(plan.model, identifier=tokens)
+            existing = matches[0] if matches else None
+            record_id = existing.id if existing is not None else new_id()
             provisional[key] = record_id
             provisional[canon_key] = record_id
 
@@ -216,10 +200,6 @@ def _load_source(
 
             record = _merge_record(plan.model, record_id, canonical_id, existing, values)
             saved = db.put(record)
-            index = _index_for(db, plan.model, index_cache)
-            index[saved.id] = saved
-            for ident in saved.identifiers:
-                index[ident] = saved
 
             visiting.discard(key)
             visiting.discard(canon_key)
@@ -236,11 +216,13 @@ def load(
     source: str | Path | None = None,
     *,
     db_path: str | Path | None = None,
+    refresh: bool = False,
 ) -> int:
     """Load records from a local JSON repo or a supported source URL.
 
-    When source is omitted, loads from [meta] repo_path. Returns the number
-    of records written to the database.
+    When source is omitted, loads from [meta] repo_path. Existing records from
+    source URLs are skipped unless refresh=True. Returns the number of records
+    written to the database.
     """
     cfg = config.load()
     target_db = db_path or cfg.db_path
@@ -250,7 +232,7 @@ def load(
         matched = _match_source(source)
         if matched is not None:
             factory, key = matched
-            return _load_source(factory, key, db_path=target_db)
+            return _load_source(factory, key, db_path=target_db, refresh=refresh)
         if _looks_like_url(source):
             raise ValueError(f"unsupported source URL: {source}")
     return _load_repo(as_path(source), db_path=target_db)

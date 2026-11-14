@@ -226,7 +226,7 @@ class TestWaybackBackend:
 
         assert staged == ["v1.cbz"]
         assert out[0].location == f"wayback:{BASE_URL}/web/9id_/https://host/manga/v1.cbz"
-        assert out[0].hashes == WANT.tokens
+        assert out[0].hashes == WANT.identifiers
 
     def test_copy_maps_rate_limit_to_transient(
         self, fake_http, disable_sleep, monkeypatch, tmp_path

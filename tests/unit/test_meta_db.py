@@ -67,6 +67,19 @@ def test_find_filters_and_paginates(db):
     assert len(db.find(limit=2, offset=1)) == 2
 
 
+def test_find_by_identifier(db):
+    db.put(Person(id="p1", name="Douglas", identifiers=["wikidata:Q42", "viaf:113"]))
+    db.put(Book(id="b1", title="Guide", identifiers=["isbn13:9780", "wikidata:Q187655"]))
+    db.put(File(id=ID, size=3, identifiers=[ID, "sha1:bbb"]))
+
+    assert [r.id for r in db.find(identifier="wikidata:Q42")] == ["p1"]
+    assert [r.id for r in db.find(Book, identifier=["isbn13:9780", "missing"])] == ["b1"]
+    assert [r.id for r in db.find(identifier="sha1:bbb")] == [ID]
+    assert db.find(identifier="missing") == []
+    assert db.find(identifier="") == []
+    assert db.find(identifier=[]) == []
+
+
 def test_find_newest_first(db):
     db.put(Book(id="b1", title="one"))
     db.put(Book(id="b2", title="two"))
@@ -106,6 +119,8 @@ def test_validate_reports_orphans_and_duplicates(tmp_path):
     path = tmp_path / "records.db"
     with MetaDB(path) as meta:
         meta.put(Book(id="b1", title="x", author_ids=["ghost"]))
+        meta.put(Person(id="p1", name="A", identifiers=["wikidata:Q42"]))
+        meta.put(Person(id="p2", name="B", identifiers=["wikidata:Q42"]))
         meta.conn.execute("INSERT INTO book_authors(book_id, person_id) VALUES ('gone', 'p1')")
         meta.conn.execute("INSERT INTO persons(id, slug, name) VALUES ('b1', 'b1-slug', 'same id')")
 
@@ -114,6 +129,7 @@ def test_validate_reports_orphans_and_duplicates(tmp_path):
     assert "book_authors.person_id 'ghost' does not exist" in issues
     assert "book_authors.book_id 'gone' does not exist" in issues
     assert "duplicate record id 'b1' in 'books' and 'persons'" in issues
+    assert "duplicate identifier 'wikidata:Q42' in 'persons'" in issues
 
 
 def test_context_exit_rolls_back_on_error(tmp_path):
@@ -163,7 +179,7 @@ def test_file_id_must_be_content_addressed(db):
 
 
 def test_put_accepts_hash_id(db):
-    stored = db.put(File(id=ID, size=3, identifiers=["sha1:b", "md5:c"]))
+    stored = db.put(File(id=ID, size=3, identifiers=[ID, "sha1:b", "md5:c"]))
 
     assert stored.slug == ID
     assert db.get(ID) == stored

@@ -316,7 +316,7 @@ class FakeBackend:
             location = self.location(entry.relpath)
             self.uploads.append(entry.relpath)
             self.store[location] = entry.path.read_bytes()
-            item = RemoteFile(location=location, hashes=entry.hashes.tokens)
+            item = RemoteFile(location=location, hashes=entry.hashes.identifiers)
             self.files.append(item)
             yield item
 
@@ -328,7 +328,7 @@ class FakeBackend:
             if item.location == location:
                 if not item.hashes:
                     return "unknown"
-                return "ok" if set(item.hashes) & set(want.tokens) else "mismatch"
+                return "ok" if set(item.hashes) & set(want.identifiers) else "mismatch"
         return "missing"
 
     def fetch(self, location: str, dest: Path) -> None:

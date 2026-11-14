@@ -142,7 +142,7 @@ class RcloneBackend:
         tokens = _tokens(rows[0])
         if not tokens:
             return "unknown"
-        return "ok" if set(tokens) & set(want.tokens) else "mismatch"
+        return "ok" if set(tokens) & set(want.identifiers) else "mismatch"
 
     def fetch(self, location: str, dest: Path) -> None:
         """Download one object to a local path."""

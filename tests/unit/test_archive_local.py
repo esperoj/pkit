@@ -3,7 +3,8 @@ import os
 import pytest
 
 from pkit import archive
-from pkit.archive.cas import cas_path, hash_file
+from pkit.archive.cas import Hashes, cas_path, hash_file
+from pkit.archive.db import hashes_of
 from pkit.archive.errors import ArchiveError, InputError
 from pkit.meta.db import MetaDB
 from pkit.meta.models import File
@@ -28,9 +29,22 @@ def test_add_moves_content_and_links(repo, db_path):
         record = meta.get(hashes.record_id)
     assert isinstance(record, File)
     assert record.size == 7
+    assert hashes.record_id in record.identifiers
     assert f"sha1:{hashes.sha1}" in record.identifiers
     assert f"md5:{hashes.md5}" in record.identifiers
     assert record.locations == []
+
+
+def test_hashes_of_reads_identifiers_and_falls_back_to_id():
+    sha256 = "a" * 64
+    full = File(
+        id=f"sha256:{sha256}",
+        identifiers=[f"md5:{'c' * 32}", f"sha1:{'b' * 40}", f"sha256:{sha256}"],
+    )
+    legacy = File(id=f"sha256:{sha256}", identifiers=[f"sha1:{'b' * 40}"])
+
+    assert hashes_of(full) == Hashes(sha256=sha256, sha1="b" * 40, md5="c" * 32)
+    assert hashes_of(legacy) == Hashes(sha256=sha256, sha1="b" * 40)
 
 
 def test_add_is_idempotent_and_dedupes(repo, db_path):

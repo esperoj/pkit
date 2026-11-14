@@ -123,7 +123,7 @@ class WaybackBackend:
                 raise ArchiveError(str(exc)) from exc
             yield RemoteFile(
                 location=wayback_location(result.archive_url),
-                hashes=entry.hashes.tokens,
+                hashes=entry.hashes.identifiers,
             )
 
     def verify(self, location: str, want: Hashes) -> Status:
@@ -136,7 +136,7 @@ class WaybackBackend:
             if row.statuscode != "200":
                 continue
             sha1 = _sha1(row.digest)
-            if sha1 and f"sha1:{sha1}" in want.tokens:
+            if sha1 and f"sha1:{sha1}" in want.identifiers:
                 return "ok"
         return "mismatch"
 

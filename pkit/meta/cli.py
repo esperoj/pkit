@@ -1,8 +1,8 @@
 """meta CLI: dump, load, and check the record database.
 
-pkit meta dump [REPO]      # database -> <repo>/<table>.json
-pkit meta load [SOURCE]    # JSON repo or source URL -> database
-pkit meta validate         # orphan link rows, duplicate ids
+pkit meta dump [REPO]                 # database -> <repo>/<table>.json
+pkit meta load [--refresh] [SOURCE]   # JSON repo or source URL -> database
+pkit meta validate                    # orphan link rows, duplicate ids/identifiers
 """
 
 import argparse
@@ -42,9 +42,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "load", help="Load records from a JSON repo or source URL into the database."
     )
     load_cmd.add_argument("source", nargs="?", default=None, help=_SOURCE_HELP)
+    load_cmd.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-fetch and update existing records (source URLs only).",
+    )
     load_cmd.set_defaults(func=_load)
 
-    validate_cmd = sub.add_parser("validate", help="Report orphan link rows and duplicate ids.")
+    validate_cmd = sub.add_parser(
+        "validate", help="Report orphan link rows and duplicate ids/identifiers."
+    )
     validate_cmd.set_defaults(func=_validate)
     return parser
 
@@ -60,7 +67,7 @@ def _dump(args: argparse.Namespace) -> int:
 
 def _load(args: argparse.Namespace) -> int:
     try:
-        count = load.load(args.source)
+        count = load.load(args.source, refresh=args.refresh)
     except (OSError, ValueError) as exc:
         return fail(str(exc), exit_code=EXIT_USAGE)
     except HttpError as exc:

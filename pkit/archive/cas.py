@@ -41,7 +41,7 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 @dataclass(frozen=True)
 class Hashes:
-    """One content identity. sha256 names the object; sha1/md5 match remotes."""
+    """One content identity. sha256 names the object; identifiers holds all hashes."""
 
     sha256: str
     sha1: str = ""
@@ -53,12 +53,8 @@ class Hashes:
 
     @property
     def identifiers(self) -> tuple[str, ...]:
-        pairs = (("sha1", self.sha1), ("md5", self.md5))
-        return tuple(f"{algo}:{value}" for algo, value in pairs if value)
-
-    @property
-    def tokens(self) -> tuple[str, ...]:
-        return (self.record_id, *self.identifiers)
+        pairs = (("sha256", self.sha256), ("sha1", self.sha1), ("md5", self.md5))
+        return tuple(sorted(f"{algo}:{value}" for algo, value in pairs if value))
 
 
 @dataclass(frozen=True)

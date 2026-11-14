@@ -343,9 +343,11 @@ def copy(
         registered: set[str] = set()
         with _backend(remote, url) as backend:
             present = {token for item in backend.list() for token in item.hashes}
-            missing = [entry for entry in entries if not set(entry.hashes.tokens) & present]
+            missing = [entry for entry in entries if not set(entry.hashes.identifiers) & present]
             wanted = {
-                token: entry.hashes.record_id for entry in missing for token in entry.hashes.tokens
+                token: entry.hashes.record_id
+                for entry in missing
+                for token in entry.hashes.identifiers
             }
             for item in backend.copy(root, missing):
                 ids = {wanted[token] for token in item.hashes if token in wanted}
@@ -443,7 +445,7 @@ def get(
                 candidates = [
                     item.location
                     for item in backend.list()
-                    if set(item.hashes) & set(hashes.tokens)
+                    if set(item.hashes) & set(hashes.identifiers)
                 ]
         transient: TransientError | None = None
         for location in candidates:

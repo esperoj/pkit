@@ -60,19 +60,18 @@ class ArchiveDB(MetaDB):
 
     def hash_index(self) -> dict[str, str]:
         """Every known hash token mapped to its record id (one pass, O(1) lookup)."""
-        index: dict[str, str] = {}
-        for record in self.find(File):
-            index[record.id] = record.id
-            for token in record.identifiers:
-                index[token] = record.id
-        return index
+        return {token: record.id for record in self.find(File) for token in record.identifiers}
 
 
 def hashes_of(record: File) -> Hashes:
-    """Rebuild the hash set from the id and its alternate identifiers."""
-    values = {"sha1": "", "md5": ""}
+    """Rebuild the hash set from the record's identifiers (falling back to id)."""
+    values = {"sha256": "", "sha1": "", "md5": ""}
     for token in record.identifiers:
         algo, _, value = token.partition(":")
         if algo in values and value:
             values[algo] = value
-    return Hashes(sha256=record.id.removeprefix("sha256:"), **values)
+    return Hashes(
+        sha256=values["sha256"] or record.id.removeprefix("sha256:"),
+        sha1=values["sha1"],
+        md5=values["md5"],
+    )

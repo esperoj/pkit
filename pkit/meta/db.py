@@ -14,7 +14,7 @@ never a JSON payload.
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
@@ -198,13 +198,15 @@ class MetaDB:
         self,
         record_type: str | type[Record] | None = None,
         *,
+        identifier: str | Iterable[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[Record]:
         """All records of a type (or all types), newest first.
 
         record_type accepts a type name ("note") or the class (Note).
-        Unknown types raise ValueError listing the known types.
+        identifier filters to records matching a token (or any token in an
+        iterable). Unknown types raise ValueError listing the known types.
         """
         if isinstance(record_type, type):
             if not issubclass(record_type, Record):
@@ -217,15 +219,30 @@ class MetaDB:
         models = tuple(cls for cls in models if cls.table)
         if not models:
             return []
-        union = " UNION ALL ".join(
-            f"SELECT {_payload_sql(cls)} AS payload, updated_at FROM {_q(cls.table)}"
-            for cls in models
-        )
+        per_select: tuple[str, ...] = ()
+        if identifier is not None:
+            raw: Iterable[str] = (identifier,) if isinstance(identifier, str) else identifier
+            per_select = tuple(dict.fromkeys(tok for tok in raw if tok))
+            if not per_select:
+                return []
+        placeholders = ", ".join("?" * len(per_select)) if per_select else ""
+        selects: list[str] = []
+        for cls in models:
+            table = _q(cls.table)
+            where = (
+                f" WHERE EXISTS (SELECT 1 FROM json_each({table}.identifiers) AS _id "
+                f"WHERE _id.value IN ({placeholders}))"
+                if placeholders
+                else ""
+            )
+            payload = _payload_sql(cls)
+            selects.append(f"SELECT {payload} AS payload, updated_at FROM {table}{where}")
+        union = " UNION ALL ".join(selects)
         sql = f"SELECT payload FROM ({union}) ORDER BY updated_at DESC"
-        params: list[Any] = []
+        params: list[Any] = list(per_select) * len(models)
         if limit is not None or offset:
             sql += " LIMIT ? OFFSET ?"
-            params = [limit if limit is not None else -1, offset]
+            params.extend([limit if limit is not None else -1, offset])
         return [from_json(row["payload"]) for row in self.conn.execute(sql, params)]
 
     def exists(self, record_id: str) -> bool:
@@ -253,7 +270,7 @@ class MetaDB:
         return found
 
     def validate(self) -> list[str]:
-        """Orphan link parents/children, and globally duplicate record ids."""
+        """Orphan link parents/children, duplicate ids, and duplicate identifiers."""
         issues: list[str] = []
         models = stored_models()
         for cls in models:
@@ -275,4 +292,12 @@ class MetaDB:
                     issues.append(f"duplicate record id {rid!r} in {seen[rid]!r} and {cls.table!r}")
                 else:
                     seen[rid] = cls.table
+        for cls in models:
+            table = _q(cls.table)
+            rows = self.conn.execute(
+                f"SELECT _id.value FROM {table}, json_each({table}.identifiers) AS _id "
+                "WHERE _id.value <> '' "
+                f"GROUP BY _id.value HAVING count(DISTINCT {table}.id) > 1"
+            )
+            issues.extend(f"duplicate identifier {row[0]!r} in {cls.table!r}" for row in rows)
         return issues

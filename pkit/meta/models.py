@@ -124,10 +124,10 @@ class Person(Record):
 class File(Record):
     """One content-addressed file.
 
-    id is "sha256:<hex>" so re-adding the same bytes is the same row.
-    identifiers carry alternate hashes ("sha1:...", "md5:...") used to match
-    remotes. locations are remote copies only — local presence lives in the
-    filesystem, never here.
+    id is "sha256:<hex>" so re-adding the same bytes is the same row across
+    machines. identifiers carry all content hashes ("sha256:...", "sha1:...",
+    "md5:...") so every record type stores all lookup tokens uniformly.
+    locations are remote copies only — local presence lives in the filesystem.
     """
 
     type: Literal["file"] = "file"

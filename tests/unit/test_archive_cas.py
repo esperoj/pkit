@@ -23,19 +23,21 @@ PAYLOAD = b"pandora"
 SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
 
 
-def test_hashes_tokens():
+def test_hashes_identifiers():
     hashes = Hashes(sha256="a" * 64, sha1="b" * 40, md5="c" * 32)
 
     assert hashes.record_id == f"sha256:{'a' * 64}"
-    assert hashes.identifiers == (f"sha1:{'b' * 40}", f"md5:{'c' * 32}")
-    assert hashes.tokens == (hashes.record_id, *hashes.identifiers)
+    assert hashes.identifiers == (
+        f"md5:{'c' * 32}",
+        f"sha1:{'b' * 40}",
+        f"sha256:{'a' * 64}",
+    )
 
 
 def test_hashes_without_alternates():
     hashes = Hashes(sha256="a" * 64)
 
-    assert hashes.identifiers == ()
-    assert hashes.tokens == (hashes.record_id,)
+    assert hashes.identifiers == (hashes.record_id,)
 
 
 def test_hash_file_computes_all_three(tmp_path):
