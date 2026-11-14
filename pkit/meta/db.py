@@ -4,8 +4,8 @@ MetaDB owns connect + migrate + commit/rollback + close, so no caller threads
 a raw connection through its code. It is a context manager:
 
     with MetaDB(path) as db:
-        db.put(Book(id="b1", title="..."))
-        record = db.get("b1")
+        db.put(Text(id="t1", title="..."))
+        record = db.get("t1")
 
 Input rule: lenient at the edge (Record or mapping in, str | Path | None for
 paths), strict inside, one output type. Here `str` always means a record id —

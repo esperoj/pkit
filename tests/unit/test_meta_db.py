@@ -4,7 +4,7 @@ import pytest
 
 from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
-from pkit.meta.models import Book, File, Person
+from pkit.meta.models import File, Person, Software, Text
 
 ID = "sha256:" + "a" * 64
 
@@ -17,13 +17,51 @@ def db(tmp_path):
 
 
 def test_put_and_get_round_trip(db):
-    db.put(Book(id="b1", title="Pandora Hearts", author_ids=["p1"]))
+    db.put(
+        Text(
+            id="t1",
+            title="Pandora Hearts",
+            kind="manga",
+            series=["Pandora Hearts"],
+            genres=["dark fantasy"],
+            author_ids=["p1"],
+        )
+    )
 
-    record = db.get("b1")
+    record = db.get("t1")
 
-    assert isinstance(record, Book)
+    assert isinstance(record, Text)
     assert record.title == "Pandora Hearts"
+    assert record.kind == "manga"
+    assert record.series == ["Pandora Hearts"]
+    assert record.genres == ["dark fantasy"]
     assert record.author_ids == ["p1"]
+
+
+def test_software_round_trip(db):
+    db.put(
+        Software(
+            id="s1",
+            title="Tales of the Abyss",
+            kind="game",
+            series=["Tales"],
+            developers=["Namco Tales Studio"],
+            publishers=["Namco"],
+            platforms=["PlayStation 2", "Nintendo 3DS"],
+            genres=["role-playing video game"],
+            identifiers=["wikidata:Q82050", "igdb:tales-of-the-abyss"],
+        )
+    )
+
+    record = db.get("s1")
+
+    assert isinstance(record, Software)
+    assert record.title == "Tales of the Abyss"
+    assert record.kind == "game"
+    assert record.series == ["Tales"]
+    assert record.developers == ["Namco Tales Studio"]
+    assert record.platforms == ["PlayStation 2", "Nintendo 3DS"]
+    assert [r.id for r in db.find(Software, identifier="wikidata:Q82050")] == ["s1"]
 
 
 def test_put_accepts_mapping(db):
@@ -56,24 +94,28 @@ def test_get_or_create(db):
 
 
 def test_find_filters_and_paginates(db):
-    db.put(Book(id="b1", title="one"))
-    db.put(Book(id="b2", title="two"))
+    db.put(Text(id="t1", title="one"))
+    db.put(Text(id="t2", title="two"))
     db.put(Person(id="p1", name="Jun"))
+    db.put(Software(id="s1", title="app"))
 
-    assert {record.id for record in db.find(Book)} == {"b1", "b2"}
+    assert {record.id for record in db.find(Text)} == {"t1", "t2"}
     assert [record.id for record in db.find("person")] == ["p1"]
-    assert len(db.find()) == 3
-    assert len(db.find(Book, limit=1)) == 1
+    assert [record.id for record in db.find(Software)] == ["s1"]
+    assert len(db.find()) == 4
+    assert len(db.find(Text, limit=1)) == 1
     assert len(db.find(limit=2, offset=1)) == 2
 
 
 def test_find_by_identifier(db):
     db.put(Person(id="p1", name="Douglas", identifiers=["wikidata:Q42", "viaf:113"]))
-    db.put(Book(id="b1", title="Guide", identifiers=["isbn13:9780", "wikidata:Q187655"]))
+    db.put(Text(id="t1", title="Guide", identifiers=["isbn13:9780", "wikidata:Q187655"]))
+    db.put(Software(id="s1", title="Abyss", identifiers=["wikidata:Q82050", "igdb:abyss"]))
     db.put(File(id=ID, size=3, identifiers=[ID, "sha1:bbb"]))
 
     assert [r.id for r in db.find(identifier="wikidata:Q42")] == ["p1"]
-    assert [r.id for r in db.find(Book, identifier=["isbn13:9780", "missing"])] == ["b1"]
+    assert [r.id for r in db.find(Text, identifier=["isbn13:9780", "missing"])] == ["t1"]
+    assert [r.id for r in db.find(Software, identifier="igdb:abyss")] == ["s1"]
     assert [r.id for r in db.find(identifier="sha1:bbb")] == [ID]
     assert db.find(identifier="missing") == []
     assert db.find(identifier="") == []
@@ -81,11 +123,11 @@ def test_find_by_identifier(db):
 
 
 def test_find_newest_first(db):
-    db.put(Book(id="b1", title="one"))
-    db.put(Book(id="b2", title="two"))
-    db.conn.execute("UPDATE books SET updated_at = '2000-01-01T00:00:00Z' WHERE id = 'b1'")
+    db.put(Text(id="t1", title="one"))
+    db.put(Text(id="t2", title="two"))
+    db.conn.execute("UPDATE texts SET updated_at = '2000-01-01T00:00:00Z' WHERE id = 't1'")
 
-    assert [record.id for record in db.find(Book)] == ["b2", "b1"]
+    assert [record.id for record in db.find(Text)] == ["t2", "t1"]
 
 
 def test_find_rejects_unknown_type(db):
@@ -107,28 +149,28 @@ def test_exists(db):
 
 def test_delete_removes_rows_and_links(db):
     db.put(Person(id="p1", name="Jun"))
-    db.put(Book(id="b1", title="x", author_ids=["p1"]))
+    db.put(Text(id="t1", title="x", author_ids=["p1"]))
 
-    assert db.delete("b1") is True
-    assert db.delete("b1") is False
-    assert db.get("b1") is None
+    assert db.delete("t1") is True
+    assert db.delete("t1") is False
+    assert db.get("t1") is None
     assert db.validate() == []
 
 
 def test_validate_reports_orphans_and_duplicates(tmp_path):
     path = tmp_path / "records.db"
     with MetaDB(path) as meta:
-        meta.put(Book(id="b1", title="x", author_ids=["ghost"]))
+        meta.put(Text(id="t1", title="x", author_ids=["ghost"]))
         meta.put(Person(id="p1", name="A", identifiers=["wikidata:Q42"]))
         meta.put(Person(id="p2", name="B", identifiers=["wikidata:Q42"]))
-        meta.conn.execute("INSERT INTO book_authors(book_id, person_id) VALUES ('gone', 'p1')")
-        meta.conn.execute("INSERT INTO persons(id, slug, name) VALUES ('b1', 'b1-slug', 'same id')")
+        meta.conn.execute("INSERT INTO text_authors(text_id, person_id) VALUES ('gone', 'p1')")
+        meta.conn.execute("INSERT INTO persons(id, slug, name) VALUES ('t1', 't1-slug', 'same id')")
 
         issues = meta.validate()
 
-    assert "book_authors.person_id 'ghost' does not exist" in issues
-    assert "book_authors.book_id 'gone' does not exist" in issues
-    assert "duplicate record id 'b1' in 'books' and 'persons'" in issues
+    assert "text_authors.person_id 'ghost' does not exist" in issues
+    assert "text_authors.text_id 'gone' does not exist" in issues
+    assert "duplicate record id 't1' in 'texts' and 'persons'" in issues
     assert "duplicate identifier 'wikidata:Q42' in 'persons'" in issues
 
 
@@ -159,7 +201,7 @@ def test_migrations_apply_once(tmp_path):
     with MetaDB(path) as meta:
         count = meta.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
 
-    assert count == 3
+    assert count == 4
 
 
 def test_path_defaults_to_config(tmp_path, monkeypatch):
@@ -190,12 +232,16 @@ def test_dump_load_round_trip(tmp_path):
     repo = tmp_path / "repo"
     with MetaDB(db_file) as meta:
         meta.put(File(id=ID, size=1, locations=["ia:item/a"]))
+        meta.put(Software(id="s1", title="Abyss", kind="game", series=["Tales"]))
 
-    assert dump.dump(repo, db_path=db_file) == 1
+    assert dump.dump(repo, db_path=db_file) == 2
 
     other = tmp_path / "b.db"
-    assert load.load(repo, db_path=other) == 1
+    assert load.load(repo, db_path=other) == 2
     with MetaDB(other) as meta:
-        record = meta.get(ID)
-    assert isinstance(record, File)
-    assert record.locations == ["ia:item/a"]
+        file_rec = meta.get(ID)
+        sw_rec = meta.get("s1")
+    assert isinstance(file_rec, File)
+    assert file_rec.locations == ["ia:item/a"]
+    assert isinstance(sw_rec, Software)
+    assert sw_rec.series == ["Tales"]

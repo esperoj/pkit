@@ -1,18 +1,29 @@
-"""Wikidata source and declarative Book/Person import plans."""
+"""Wikidata source and declarative Person/Software/Text import plans."""
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import parse_qs, urlparse
 
 from pkit.lib.http import HttpClient
-from pkit.meta.models import Book, Person, Record
+from pkit.meta.models import Person, Record, Software, Text
 from pkit.meta.source import LinkRef, Plan, first
 from pkit.version import get_version
 
-__all__ = ["API_URL", "BOOK_CLASSES", "PLANS", "EntityView", "WikidataSource"]
+__all__ = [
+    "API_URL",
+    "GAME_CLASSES",
+    "PERSON_PLAN",
+    "PLANS",
+    "SOFTWARE_CLASSES",
+    "SOFTWARE_PLAN",
+    "TEXT_CLASSES",
+    "TEXT_PLAN",
+    "EntityView",
+    "WikidataSource",
+]
 
 API_URL = "https://www.wikidata.org/w/api.php"
 _BATCH_SIZE = 50
@@ -20,7 +31,27 @@ _LANGS = ("en", "en-gb", "en-us")
 _QID_RE = re.compile(r"^Q[1-9]\d*$")
 _QID_PATH_RE = re.compile(r"(?:^|/)(Q[1-9]\d*)(?:\.json)?$", re.IGNORECASE)
 
-BOOK_CLASSES = (
+GAME_CLASSES = (
+    "Q7889",  # video game
+    "Q7058673",  # video game series
+    "Q689445",  # visual novel
+    "Q209163",  # expansion add-on
+    "Q865493",  # video game mod
+)
+
+SOFTWARE_CLASSES = (
+    "Q7397",  # software
+    "Q166142",  # application software
+    "Q341",  # free software
+    "Q506883",  # free and open-source software
+    "Q1130645",  # open-source software
+    "Q218616",  # proprietary software
+    "Q188860",  # software library
+    "Q9135",  # operating system
+    "Q189210",  # web application
+)
+
+TEXT_CLASSES = (
     "Q571",  # book
     "Q7725634",  # literary work
     "Q47461344",  # written work
@@ -30,13 +61,76 @@ BOOK_CLASSES = (
     "Q25379",  # play
     "Q277759",  # book series
     "Q1667921",  # novel series
+    "Q8274",  # manga
     "Q21198342",  # manga series
-    "Q725377",  # light novel
+    "Q747381",  # light novel
     "Q53731850",  # light novel series
+    "Q104213567",  # light novel series
+    "Q725377",  # graphic novel
     "Q1760610",  # comic book
     "Q2831984",  # comic book album
     "Q1004",  # comics
+    "Q191067",  # article
+    "Q13442814",  # scholarly article
+    "Q5633421",  # scientific journal
+    "Q737498",  # academic journal
+    "Q1057179",  # user guide / manual
+    "Q1413406",  # technical documentation
 )
+
+_GAME_ID_PROPS = (
+    "P1733",  # Steam application ID
+    "P5794",  # IGDB game ID
+    "P2725",  # GOG application ID
+    "P11688",  # MobyGames game ID
+    "P3180",  # Visual Novel Database ID
+    "P6337",  # PCGamingWiki ID
+    "P4769",  # GameFAQs game ID
+    "P5290",  # Redump ID
+    "P7597",  # Lutris game ID
+)
+
+_SOFTWARE_PROPS = (
+    "P306",  # operating system
+    "P1324",  # source code repository URL
+    "P4655",  # Flathub ID
+    "P3454",  # Arch Linux package
+    "P3442",  # Debian stable package
+    "P3597",  # F-Droid package
+    "P4763",  # crates.io ID
+)
+
+_TEXT_ID_PROPS = ("P212", "P957", "P236", "P356")  # ISBN-13, ISBN-10, ISSN, DOI
+
+_SOFTWARE_KINDS = {
+    "Q188860": "library",
+    "Q9135": "os",
+}
+
+_TEXT_KINDS = {
+    "Q8274": "manga",
+    "Q21198342": "manga",
+    "Q747381": "light novel",
+    "Q53731850": "light novel",
+    "Q104213567": "light novel",
+    "Q1004": "comic",
+    "Q1760610": "comic",
+    "Q2831984": "comic",
+    "Q725377": "comic",
+    "Q25379": "play",
+    "Q49084": "short story",
+    "Q8261": "novel",
+    "Q1667921": "novel",
+    "Q13442814": "article",
+    "Q191067": "article",
+    "Q5633421": "journal",
+    "Q737498": "journal",
+    "Q1057179": "manual",
+    "Q1413406": "manual",
+    "Q571": "book",
+    "Q277759": "book",
+    "Q3331189": "book",
+}
 
 
 @dataclass(frozen=True)
@@ -175,18 +269,19 @@ def description(lang: str | None = None) -> Callable[[EntityView], str]:
     return lambda view: _pick_text(view.raw.get("descriptions"), lang=lang)
 
 
-def claims(prop: str, *, lang: str | None = None) -> Callable[[EntityView], list[str]]:
-    """Extract all decoded string values for a property (respecting ranks)."""
+def claims(*props: str, lang: str | None = None) -> Callable[[EntityView], list[str]]:
+    """Extract all decoded string values across properties (respecting ranks)."""
 
     def _extract(view: EntityView) -> list[str]:
         out: list[str] = []
-        for stmt in _statements(view.raw, prop):
-            parsed = _datavalue(stmt)
-            if parsed is None:
-                continue
-            val = _decode_value(view, parsed[0], parsed[1], lang=lang)
-            if val and val not in out:
-                out.append(val)
+        for prop in props:
+            for stmt in _statements(view.raw, prop):
+                parsed = _datavalue(stmt)
+                if parsed is None:
+                    continue
+                val = _decode_value(view, parsed[0], parsed[1], lang=lang)
+                if val and val not in out:
+                    out.append(val)
         return out
 
     return _extract
@@ -254,52 +349,128 @@ def has_claim(*props: str) -> Callable[[EntityView], bool]:
     return _match
 
 
+def kind_of(
+    mapping: Mapping[str, str],
+    *,
+    props: Sequence[str] = ("P31",),
+    default: str = "",
+) -> Callable[[EntityView], str]:
+    """Map the first matching QID across properties to a coarse kind label."""
+
+    def _extract(view: EntityView) -> str:
+        for prop in props:
+            for qid in item_ids(prop)(view):
+                if qid in mapping:
+                    return mapping[qid]
+        return default
+
+    return _extract
+
+
+def _software_kind(view: EntityView) -> str:
+    if has_class(*GAME_CLASSES)(view) or has_claim(*_GAME_ID_PROPS)(view):
+        return "game"
+    return kind_of(_SOFTWARE_KINDS, default="software")(view)
+
+
+PERSON_PLAN = Plan(
+    model=Person,
+    when=has_class("Q5"),
+    key=lambda view: str(view.raw.get("id") or ""),
+    fields={
+        "name": label(),
+        "gender": claim("P21"),
+        "birth_date": claim("P569"),
+        "death_date": claim("P570"),
+        "country": claim("P27"),
+        "occupations": claims("P106"),
+        "identifiers": ext_ids(
+            P214="viaf",
+            P213="isni",
+            P227="gnd",
+            P244="lccn",
+            P496="orcid",
+            P648="openlibrary",
+        ),
+    },
+)
+
+SOFTWARE_PLAN = Plan(
+    model=Software,
+    when=lambda view: (
+        has_class(*GAME_CLASSES, *SOFTWARE_CLASSES)(view)
+        or has_claim(*_GAME_ID_PROPS, *_SOFTWARE_PROPS)(view)
+    ),
+    key=lambda view: str(view.raw.get("id") or ""),
+    fields={
+        "title": first(claim("P1476", lang="en"), label("en"), claim("P1476"), label()),
+        "kind": _software_kind,
+        "publication_date": first(claim("P577"), claim("P571")),
+        "description": description(),
+        "website": first(claim("P856"), claim("P1324")),
+        "series": claims("P179"),
+        "developers": claims("P178"),
+        "publishers": claims("P123"),
+        "platforms": claims("P400", "P306"),
+        "genres": claims("P136"),
+        "licenses": claims("P275"),
+        "identifiers": ext_ids(
+            P1733="steam",
+            P5794="igdb",
+            P2725="gog",
+            P11688="mobygames",
+            P3180="vndb",
+            P6337="pcgamingwiki",
+            P2816="hltb",
+            P7597="lutris",
+            P4769="gamefaqs",
+            P5290="redump",
+            P6278="epic",
+            P4655="flathub",
+            P3454="arch",
+            P3442="debian",
+            P3597="fdroid",
+            P3418="gplay",
+            P4763="crates",
+            P2209="sourceforge",
+        ),
+    },
+)
+
+TEXT_PLAN = Plan(
+    model=Text,
+    when=lambda view: has_class(*TEXT_CLASSES)(view) or has_claim(*_TEXT_ID_PROPS)(view),
+    key=lambda view: str(view.raw.get("id") or ""),
+    fields={
+        "title": first(claim("P1476", lang="en"), label("en"), claim("P1476"), label()),
+        "kind": kind_of(_TEXT_KINDS, props=("P7937", "P31"), default="text"),
+        "publication_date": first(claim("P577"), claim("P571")),
+        "lang": claim("P407"),
+        "description": description(),
+        "series": claims("P179"),
+        "publishers": claims("P123"),
+        "genres": claims("P136"),
+        "identifiers": ext_ids(
+            P212="isbn13",
+            P957="isbn10",
+            P236="issn",
+            P356="doi",
+            P214="viaf",
+            P244="lccn",
+            P648="openlibrary",
+            P1085="librarything",
+            P2969="goodreads",
+        ),
+    },
+    links={
+        "author_ids": LinkRef(item_ids("P50"), model=Person),
+    },
+)
+
 PLANS: tuple[Plan, ...] = (
-    Plan(
-        model=Person,
-        when=has_class("Q5"),
-        key=lambda view: str(view.raw.get("id") or ""),
-        fields={
-            "name": label(),
-            "gender": claim("P21"),
-            "birth_date": claim("P569"),
-            "death_date": claim("P570"),
-            "country": claim("P27"),
-            "occupations": claims("P106"),
-            "identifiers": ext_ids(
-                P214="viaf",
-                P213="isni",
-                P227="gnd",
-                P244="lccn",
-                P496="orcid",
-                P648="openlibrary",
-            ),
-        },
-    ),
-    Plan(
-        model=Book,
-        when=lambda view: has_class(*BOOK_CLASSES)(view) or has_claim("P212", "P957")(view),
-        key=lambda view: str(view.raw.get("id") or ""),
-        fields={
-            "title": first(claim("P1476", lang="en"), label("en"), claim("P1476"), label()),
-            "publication_date": first(claim("P577"), claim("P571")),
-            "lang": claim("P407"),
-            "description": description(),
-            "publishers": claims("P123"),
-            "identifiers": ext_ids(
-                P212="isbn13",
-                P957="isbn10",
-                P214="viaf",
-                P244="lccn",
-                P648="openlibrary",
-                P1085="librarything",
-                P2969="goodreads",
-            ),
-        },
-        links={
-            "author_ids": LinkRef(item_ids("P50"), model=Person),
-        },
-    ),
+    PERSON_PLAN,
+    SOFTWARE_PLAN,
+    TEXT_PLAN,
 )
 
 

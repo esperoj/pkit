@@ -13,9 +13,18 @@ pkit meta validate                    # orphan link rows, duplicate ids/identifi
 
 ~REPO~ defaults to ~[meta] repo_path~. The database comes from
 ~[meta] db_path~ or ~$PKIT_META_DB_PATH~. When loading a source URL
-(such as ~wikidata:Q42~), existing records matched by identifier are
-skipped unless ~--refresh~ is passed. ~validate~ prints each issue to
-stdout and exits 1 if any were found (0 when clean).
+(such as ~wikidata:Q42~ or ~wikidata:Q82050~), existing records matched by
+identifier are skipped unless ~--refresh~ is passed. ~validate~ prints
+each issue to stdout and exits 1 if any were found (0 when clean).
+
+* Record types
+
+| Type       | Covers                                            | id              |
+|------------+---------------------------------------------------+-----------------|
+| ~Text~     | Books, manga, comics, articles, journals, manuals | UUID4           |
+| ~Person~   | Authors, creators                                 | UUID4           |
+| ~Software~ | Applications, libraries, OSes, video games        | UUID4           |
+| ~File~     | Content-addressed files (~pkit.archive~)          | ~sha256:<hex>~  |
 
 * Sync between machines
 
@@ -34,25 +43,31 @@ and are rebuilt on load.
 #+begin_src python
 from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
-from pkit.meta.models import Book, File, Person
+from pkit.meta.models import File, Person, Software, Text
 
 with MetaDB() as db:
-    db.put(Book(id="b1", title="Pandora Hearts", author_ids=["p1"]))
-    record = db.get("b1")
-    records = db.find(Book)  # newest first
+    db.put(Text(id="t1", title="Pandora Hearts", kind="manga", author_ids=["p1"]))
+    db.put(Software(id="s1", title="Tales of the Abyss", kind="game", series=["Tales"]))
+    record = db.get("t1")
+    records = db.find(Text)  # newest first
     matches = db.find(identifier="wikidata:Q42")
     issues = db.validate()  # orphans, duplicate ids/identifiers
 
 dump.dump("~/records")  # records -> JSON repo
 load.load("~/records")  # JSON repo -> records
+load.load("wikidata:Q82050")  # import a game or software item from Wikidata
 load.load("wikidata:Q42", refresh=True)  # re-fetch an existing source item
 #+end_src
 
 ~put~ accepts a record or a plain mapping; ~get~/~find~ return typed
-records. Domain records (~Book~, ~Person~, including source imports)
-use UUID4 as ~id~ and store all external IDs (~wikidata:...~,
-~isbn13:...~, ~viaf:...~) in ~identifiers~. ~File.id~ is ~sha256:<hex>~
-so re-adding the same bytes is the same row across machines, and
+records. Domain records (~Text~, ~Person~, ~Software~, including source
+imports) use UUID4 as ~id~ and store all external IDs (~wikidata:...~,
+~isbn13:...~, ~igdb:...~, ~flathub:...~, ~viaf:...~) in ~identifiers~.
+On ~Text~ and ~Software~, ~kind~ distinguishes formats (~manga~,
+~novel~, ~article~, ~game~, ~software~, …), ~series~ is a list of
+strings, and publishers, developers, and platforms are plain strings
+(~Text.author_ids~ links to ~Person~). ~File.id~ is ~sha256:<hex>~ so
+re-adding the same bytes is the same row across machines, and
 ~sha256:<hex>~ is also stored in ~File.identifiers~ alongside alternate
 hashes (~sha1:...~, ~md5:...~). ~db_path~ defaults to ~[meta] db_path~ /
 ~$PKIT_META_DB_PATH~.

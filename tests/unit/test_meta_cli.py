@@ -5,7 +5,7 @@ import pytest
 from pkit.lib.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE
 from pkit.meta.cli import main
 from pkit.meta.db import MetaDB
-from pkit.meta.models import File, Person
+from pkit.meta.models import File, Person, Text
 
 ID = "sha256:" + "a" * 64
 
@@ -101,15 +101,13 @@ def test_validate_clean_database_is_silent(run_cli, db_path):
 
 
 def test_validate_reports_orphans(run_cli, db_path):
-    from pkit.meta.models import Book
-
     with MetaDB(db_path) as meta:
-        meta.put(Book(id="b1", title="x", author_ids=["ghost"]))
+        meta.put(Text(id="t1", title="x", author_ids=["ghost"]))
 
     code, out, _err = run_cli(main, ["validate"])
 
     assert code == EXIT_ERROR
-    assert "book_authors.person_id 'ghost' does not exist" in out
+    assert "text_authors.person_id 'ghost' does not exist" in out
 
 
 def test_unexpected_error_is_one(run_cli, db_path, monkeypatch):

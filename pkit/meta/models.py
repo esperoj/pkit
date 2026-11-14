@@ -6,11 +6,12 @@ from uuid import uuid4
 
 __all__ = [
     "RECORD_TYPES",
-    "Book",
     "File",
     "Link",
     "Person",
     "Record",
+    "Software",
+    "Text",
     "new_id",
     "record_model",
     "stored_models",
@@ -92,19 +93,22 @@ class Record:
 
 
 @record_model
-class Book(Record):
-    type: Literal["book"] = "book"
-    table: ClassVar[str] = "books"
+class Text(Record):
+    type: Literal["text"] = "text"
+    table: ClassVar[str] = "texts"
     links: ClassVar[tuple[Link, ...]] = (
-        Link("author_ids", "book_authors", "book_id", "person_id", "persons"),
+        Link("author_ids", "text_authors", "text_id", "person_id", "persons"),
     )
 
     title: str = ""
+    kind: str = ""
     publication_date: str = ""
     lang: str = ""
     description: str = ""
+    series: list[str] = field(default_factory=list)
     author_ids: list[str] = field(default_factory=list)
     publishers: list[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
 
 
 @record_model
@@ -118,6 +122,24 @@ class Person(Record):
     death_date: str = ""
     country: str = ""
     occupations: list[str] = field(default_factory=list)
+
+
+@record_model
+class Software(Record):
+    type: Literal["software"] = "software"
+    table: ClassVar[str] = "software"
+
+    title: str = ""
+    kind: str = ""
+    publication_date: str = ""
+    description: str = ""
+    website: str = ""
+    series: list[str] = field(default_factory=list)
+    developers: list[str] = field(default_factory=list)
+    publishers: list[str] = field(default_factory=list)
+    platforms: list[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
+    licenses: list[str] = field(default_factory=list)
 
 
 @record_model
