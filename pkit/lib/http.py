@@ -82,7 +82,14 @@ class HttpClient:
         try:
             with path.open("wb") as handle:
                 for chunk in response.iter_content(CHUNK_SIZE):
-                    handle.write(chunk)
+                    if chunk:
+                        handle.write(chunk)
+        except requests.RequestException as exc:
+            path.unlink(missing_ok=True)
+            raise HttpError(str(exc)) from exc
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
         finally:
             response.close()
         return path

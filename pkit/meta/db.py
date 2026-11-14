@@ -36,25 +36,18 @@ __all__ = [
 ]
 
 
-# --- sql helpers (future: pkit/meta/sql.py) ----------------------------------
-
-
 def _q(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def _models() -> tuple[type[Record], ...]:
-    return stored_models()
-
-
-def _coerce(record: Record | Mapping[str, Any]) -> Record:
-    """One parse path for lenient input: mappings go through from_dict."""
-    return record if isinstance(record, Record) else from_dict(dict(record))
-
-
-def _normalize(record: Record) -> Record:
-    record = record if record.id else replace(record, id=new_id())
-    return record if record.slug else replace(record, slug=record.id)
+def _prepare(record: Record | Mapping[str, Any]) -> Record:
+    """Coerce a mapping or Record and ensure non-empty id and slug."""
+    parsed = record if isinstance(record, Record) else from_dict(dict(record))
+    if not parsed.id:
+        parsed = replace(parsed, id=new_id())
+    if not parsed.slug:
+        parsed = replace(parsed, slug=parsed.id)
+    return parsed
 
 
 def _payload_sql(cls: type[Record]) -> str:
@@ -83,9 +76,6 @@ def _values(record: Record, cls: type[Record]) -> list[Any]:
             v = {} if name == "extra" else []
         values.append(json.dumps(v, ensure_ascii=False, default=str))
     return values
-
-
-# --- connection (future: pkit/meta/db.py) ------------------------------------
 
 
 def connect(path: str | Path | None = None) -> sqlite3.Connection:
@@ -145,15 +135,12 @@ def migrate(conn: sqlite3.Connection, directory: str | Path | None = None) -> No
         )
 
 
-# --- write (future: pkit/meta/write.py) --------------------------------------
-
-
 def put(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) -> Record:
     """Insert or update by id, then re-sync link rows.
 
     Accepts a Record or a mapping (parsed via from_dict); always returns Record.
     """
-    record = _normalize(_coerce(record))
+    record = _prepare(record)
     cls = type(record)
     cols = ["id", "slug", *cls.scalar_fields, *cls.json_fields]
     conn.execute(
@@ -181,7 +168,7 @@ def get_or_create(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) 
     One query; own-table semantics preserved (a cross-type id collision still
     inserts, and validate() will flag it).
     """
-    record = _normalize(_coerce(record))
+    record = _prepare(record)
     cls = type(record)
     row = conn.execute(
         f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
@@ -190,12 +177,9 @@ def get_or_create(conn: sqlite3.Connection, record: Record | Mapping[str, Any]) 
     return from_json(row["payload"]) if row is not None else put(conn, record)
 
 
-# --- read (future: pkit/meta/read.py) ----------------------------------------
-
-
 def get(conn: sqlite3.Connection, record_id: str) -> Record | None:
     """Fetch one record by id across all known types."""
-    for cls in _models():
+    for cls in stored_models():
         row = conn.execute(
             f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
             (record_id,),
@@ -224,7 +208,7 @@ def find(
     if record_type is not None and record_type not in RECORD_TYPES:
         known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
         raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
-    models = (RECORD_TYPES[record_type],) if record_type is not None else _models()
+    models = (RECORD_TYPES[record_type],) if record_type is not None else stored_models()
     models = tuple(cls for cls in models if cls.table)
     if not models:
         return []
@@ -241,7 +225,7 @@ def find(
 
 def exists(conn: sqlite3.Connection, record_id: str) -> bool:
     """Cheap presence check: no payload build, no JSON parse."""
-    for cls in _models():
+    for cls in stored_models():
         row = conn.execute(
             f"SELECT 1 FROM {_q(cls.table)} WHERE id = ? LIMIT 1", (record_id,)
         ).fetchone()
@@ -250,13 +234,10 @@ def exists(conn: sqlite3.Connection, record_id: str) -> bool:
     return False
 
 
-# --- delete / check (future: pkit/meta/check.py) -----------------------------
-
-
 def delete(conn: sqlite3.Connection, record_id: str) -> bool:
     """Hard-delete, plus every link row referencing the id."""
     found = False
-    for cls in _models():
+    for cls in stored_models():
         cur = conn.execute(f"DELETE FROM {_q(cls.table)} WHERE id = ?", (record_id,))
         found |= bool(cur.rowcount)
         for link in cls.links:
@@ -271,28 +252,20 @@ def delete(conn: sqlite3.Connection, record_id: str) -> bool:
 def validate(conn: sqlite3.Connection) -> list[str]:
     """Orphan link parents/children, and globally duplicate record ids."""
     issues: list[str] = []
-
-    def orphans(table: str, column: str, ref: str) -> list[str]:
-        return [
-            row[0]
-            for row in conn.execute(
-                f"SELECT {_q(column)} FROM {_q(table)} "
-                f"WHERE {_q(column)} NOT IN (SELECT id FROM {_q(ref)})"
-            )
-        ]
-
-    for cls in _models():
+    models = stored_models()
+    for cls in models:
         for link in cls.links:
             for col, ref in (
                 (link.parent_column, cls.table),
                 (link.child_column, link.child_table),
             ):
-                issues += [
-                    f"{link.table}.{col} {v!r} does not exist"
-                    for v in orphans(link.table, col, ref)
-                ]
+                rows = conn.execute(
+                    f"SELECT {_q(col)} FROM {_q(link.table)} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {_q(ref)} WHERE id = {_q(link.table)}.{_q(col)})"
+                )
+                issues.extend(f"{link.table}.{col} {row[0]!r} does not exist" for row in rows)
     seen: dict[str, str] = {}
-    for cls in _models():
+    for cls in models:
         for row in conn.execute(f"SELECT id FROM {_q(cls.table)}"):
             rid = row["id"]
             if rid in seen:

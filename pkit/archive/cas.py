@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import shutil
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,7 +91,7 @@ def find_cas(path: Path, cas_dir: str | Path | None = None) -> Path:
     """
     if cas_dir is not None:
         return abs_path(cas_dir)
-    start = path if path.is_dir() else path.parent
+    start = path if path.is_dir() and not path.is_symlink() else path.parent
     for parent in (start, *start.parents):
         git = parent / ".git"
         if git.is_dir():
@@ -148,6 +149,8 @@ def set_readonly(obj: Path) -> bool:
 def ingest(source: Path, cas_dir: Path, hashes: Hashes) -> Path:
     """Move content into the CAS and lock it. Existing objects are deduped."""
     obj = cas_path(cas_dir, hashes.sha256)
+    if source == obj:
+        return obj
     if obj.exists():
         source.unlink()
         return obj
@@ -155,14 +158,24 @@ def ingest(source: Path, cas_dir: Path, hashes: Hashes) -> Path:
     try:
         os.replace(source, obj)
     except OSError:
-        shutil.copy2(source, obj)
+        # Cross-device fallback: stage inside obj.parent so obj is replaced atomically.
+        fd, tmp_name = tempfile.mkstemp(dir=obj.parent, prefix=f".{obj.name}.")
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            shutil.copy2(source, tmp)
+            tmp.chmod(OBJECT_MODE)
+            os.replace(tmp, obj)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         source.unlink()
     obj.chmod(OBJECT_MODE)
     return obj
 
 
 def walk_files(root: Path) -> Iterator[Path]:
-    """Yield tree entries without following symlinks and without .git."""
+    """Yield regular files and symlinks without following symlinks and without .git."""
     if root.is_symlink() or root.is_file():
         yield root
         return
@@ -171,4 +184,6 @@ def walk_files(root: Path) -> Iterator[Path]:
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(name for name in dirnames if name != ".git")
         for name in sorted(filenames):
-            yield Path(dirpath) / name
+            item = Path(dirpath) / name
+            if item.is_symlink() or item.is_file():
+                yield item

@@ -158,40 +158,33 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _save(args: argparse.Namespace) -> int:
-    client = WaybackClient(
+    url = None if args.url == "-" else args.url
+    payload: dict[str, Any] = {}
+
+    # Unix convention:
+    #   - If URL is provided, stdin is ignored.
+    #   - If URL is omitted or "-", read from stdin.
+    if url is None:
+        url, payload = read_stdin_payload(args.json_output, primary_key="url")
+
+    if not url:
+        return fail("No target URL provided.", exit_code=EXIT_USAGE)
+
+    params = {name: getattr(args, name) for name in _OPTION_FIELDS}
+    opts = _save_options_from_params(params, payload)
+    with WaybackClient(
         api_key=args.api_key,
         api_secret=args.api_secret,
         proxy_prefix=args.proxy_prefix,
         lock_file=args.lock_file,
         timeout=args.timeout,
-    )
-    try:
-        url = None if args.url == "-" else args.url
-        payload: dict[str, Any] = {}
-
-        # Unix convention:
-        #   - If URL is provided, stdin is ignored.
-        #   - If URL is omitted or "-", read from stdin.
-        if url is None:
-            url, payload = read_stdin_payload(args.json_output, primary_key="url")
-
-        if not url:
-            return fail("No target URL provided.", exit_code=EXIT_USAGE)
-
-        params = {name: getattr(args, name) for name in _OPTION_FIELDS}
-        opts = _save_options_from_params(params, payload)
+    ) as client:
         try:
             result = client.save_url(url, opts=opts)
         except WaybackError as exc:
             return fail(str(exc), exit_code=_exit_code_for_error(exc))
-        emit_result(
-            result,
-            json_output=args.json_output,
-            plain=lambda r: r.archive_url,
-        )
-        return EXIT_OK
-    finally:
-        client.close()
+    emit_result(result, json_output=args.json_output, plain=lambda r: r.archive_url)
+    return EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None) -> int:

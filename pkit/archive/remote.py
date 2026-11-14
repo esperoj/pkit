@@ -17,8 +17,6 @@ __all__ = [
     "WAYBACK",
     "RemoteFile",
     "Status",
-    "archive_url",
-    "is_wayback",
     "merge_locations",
     "selects",
     "split_wayback",
@@ -38,43 +36,27 @@ class RemoteFile:
     hashes: tuple[str, ...]
 
 
-def is_wayback(location: str) -> bool:
-    return location.startswith(WAYBACK)
-
-
 def wayback_location(url: str) -> str:
     return f"{WAYBACK}{url}"
 
 
-def archive_url(location: str) -> str:
-    """The fetchable capture URL inside a stored wayback location."""
-    return location[len(WAYBACK) :]
-
-
 def split_wayback(location: str) -> tuple[str, str]:
     """Return (timestamp, original url) from a wayback capture location."""
-    head, marker, original = archive_url(location).partition("id_/")
-    if not marker or not original:
+    head, marker, original = location.removeprefix(WAYBACK).partition("id_/")
+    timestamp = head.rsplit("/", 1)[-1]
+    if not marker or not original or not timestamp:
         raise InputError(f"not a wayback capture url: {location}")
-    return head.rsplit("/", 1)[-1], original
+    return timestamp, original
 
 
-def _key(location: str) -> tuple[str, str]:
-    if is_wayback(location):
+def _capture_key(location: str) -> tuple[tuple[str, str], str]:
+    if location.startswith(WAYBACK):
         try:
-            return ("wayback", split_wayback(location)[1])
+            timestamp, original = split_wayback(location)
+            return ("wayback", original), timestamp
         except InputError:
-            return ("raw", location)
-    return ("raw", location)
-
-
-def _rank(location: str) -> str:
-    if is_wayback(location):
-        try:
-            return split_wayback(location)[0]
-        except InputError:
-            return ""
-    return ""
+            pass
+    return ("raw", location), ""
 
 
 def merge_locations(existing: Iterable[str], incoming: Iterable[str]) -> list[str]:
@@ -83,25 +65,32 @@ def merge_locations(existing: Iterable[str], incoming: Iterable[str]) -> list[st
     Wayback timestamps sort lexicographically, so the oldest capture wins and
     re-matching stays idempotent (byte-identical record dumps).
     """
-    chosen: dict[tuple[str, str], str] = {}
-    for location in [*existing, *incoming]:
-        key = _key(location)
+    chosen: dict[tuple[str, str], tuple[str, str]] = {}
+    for location in (*existing, *incoming):
+        key, rank = _capture_key(location)
         current = chosen.get(key)
-        if current is None or _rank(location) < _rank(current):
-            chosen[key] = location
-    return sorted(chosen.values())
+        if current is None or rank < current[0]:
+            chosen[key] = (rank, location)
+    return sorted(location for _, location in chosen.values())
+
+
+def _prefix_match(value: str, prefix: str) -> bool:
+    if prefix.endswith((":", "/")):
+        return value.startswith(prefix)
+    return value == prefix or value.startswith(f"{prefix}/")
 
 
 def selects(location: str, wanted: str, wayback_url: str = "") -> bool:
     """True when a stored location falls under a user-supplied remote spec."""
-    if location == wanted or location.startswith(wanted):
+    if _prefix_match(location, wanted):
         return True
-    if is_wayback(location) and wanted.startswith(WAYBACK) and wayback_url:
-        prefix = wanted[len(WAYBACK) :].lstrip("/")
+    if location.startswith(WAYBACK) and wanted.startswith(WAYBACK) and wayback_url:
+        prefix = wanted.removeprefix(WAYBACK).lstrip("/")
         base = wayback_url.rstrip("/")
+        target = f"{base}/{prefix}" if prefix else f"{base}/"
         try:
-            original = split_wayback(location)[1]
+            _, original = split_wayback(location)
         except InputError:
             return False
-        return original.startswith(f"{base}/{prefix}")
+        return _prefix_match(original, target)
     return False

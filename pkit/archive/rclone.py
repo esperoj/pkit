@@ -7,6 +7,7 @@ copies and checks hashes.
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Self
@@ -53,7 +54,11 @@ class RcloneBackend:
         self.close()
 
     def location(self, relpath: str) -> str:
-        return f"{self.prefix}/{relpath}" if relpath else self.prefix
+        relpath = relpath.lstrip("/")
+        if not relpath:
+            return self.prefix
+        sep = "" if self.prefix.endswith(":") else "/"
+        return f"{self.prefix}{sep}{relpath}"
 
     def _raise(self, exc: shell.ShellError) -> None:
         if isinstance(exc, shell.CommandNotFound):
@@ -82,10 +87,14 @@ class RcloneBackend:
     # inside the class body, so `list[...]` would not resolve as a type here.
     def _rows(self, raw: str) -> Sequence[dict]:
         try:
-            rows = json.loads(raw or "[]")
+            data = json.loads(raw or "[]")
         except ValueError as exc:
             raise ArchiveError("rclone lsjson returned invalid JSON") from exc
-        return [row for row in rows if isinstance(row, dict)]
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        return []
 
     def list(self) -> Sequence[RemoteFile]:
         """One recursive listing with hashes for the whole prefix."""
@@ -101,30 +110,36 @@ class RcloneBackend:
         self._run(["copyto", "--copy-links", str(source), self.location(relpath)])
 
     def copy(self, root: Path, entries: Sequence[Entry]) -> Iterator[RemoteFile]:
-        """Transfer the tree, then report what the remote actually holds."""
+        """Transfer missing entries by relative path, then report what landed."""
         if not entries:
             return iter(())
-        self._run(
-            [
-                "copy",
-                "--copy-links",
-                "--checksum",
-                "--ignore-errors",
-                "--exclude",
-                ".git/**",
-                str(root),
-                self.prefix,
-            ]
-        )
+        base = root if root.is_dir() and not root.is_symlink() else root.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "files.txt"
+            manifest.write_text(
+                "\n".join(entry.relpath for entry in entries) + "\n",
+                encoding="utf-8",
+            )
+            self._run(
+                [
+                    "copy",
+                    "--copy-links",
+                    "--checksum",
+                    "--files-from-raw",
+                    str(manifest),
+                    str(base),
+                    self.prefix,
+                ]
+            )
         return iter(self.list())
 
     def verify(self, location: str, want: Hashes) -> Status:
         """Check one object's hashes. Never prunes; the caller decides."""
-        raw = self._try_run(["lsjson", "--hash", location])
+        raw = self._try_run(["lsjson", "--stat", "--hash", location])
         if raw is None:
             return "missing"
         rows = self._rows(raw)
-        if not rows:
+        if not rows or rows[0].get("IsDir"):
             return "missing"
         tokens = _tokens(rows[0])
         if not tokens:

@@ -39,9 +39,10 @@ def file_record(conn: sqlite3.Connection, hashes: Hashes, size: int) -> File:
     if not isinstance(stored, File):
         raise InputError(f"{hashes.record_id} is not a file record")
     identifiers = sorted(set(stored.identifiers) | set(hashes.identifiers))
-    return cast(
-        File, db.put(conn, replace(stored, identifiers=identifiers, size=stored.size or size))
-    )
+    new_size = stored.size or size
+    if identifiers == stored.identifiers and new_size == stored.size:
+        return stored
+    return cast(File, db.put(conn, replace(stored, identifiers=identifiers, size=new_size)))
 
 
 def register(conn: sqlite3.Connection, record_id: str, locations: Iterable[str]) -> File:

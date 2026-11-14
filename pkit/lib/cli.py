@@ -48,11 +48,11 @@ def read_stdin_payload(
 
             (payload.get(primary_key), payload)
 
-        If stdin is a JSON scalar, returns:
+        If stdin is a JSON scalar (str/number), returns:
 
             (str(payload), {})
 
-        If stdin is invalid JSON, treats it as plain text.
+        If stdin is invalid JSON, treats the first line as plain text.
     """
     if sys.stdin.isatty():
         return None, {}
@@ -68,11 +68,15 @@ def read_stdin_payload(
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        return raw, {}
+        first_line = raw.splitlines()[0].strip()
+        return first_line or None, {}
 
     if isinstance(payload, dict):
         primary = payload.get(primary_key)
         return (str(primary) if primary is not None else None), payload
+
+    if payload is None or isinstance(payload, (bool, list)):
+        return None, {}
 
     return str(payload), {}
 

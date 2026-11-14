@@ -13,6 +13,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Self
 from urllib.parse import urlencode
 
@@ -127,6 +128,7 @@ class WaybackClient:
         self.proxy_prefix = proxy_prefix or ""
         self.lock_file = DEFAULT_LOCK_FILE if lock_file is None else lock_file
         self.timeout = timeout
+        self._owns_http = http is None
         if http is None:
             headers = {"Accept": "application/json"}
             if self.api_key and self.api_secret:
@@ -135,8 +137,9 @@ class WaybackClient:
         self._http = http
 
     def close(self) -> None:
-        """Close the underlying HTTP session."""
-        self._http.close()
+        """Close the underlying HTTP session if owned by this client."""
+        if self._owns_http:
+            self._http.close()
 
     def __enter__(self) -> Self:
         return self
@@ -176,7 +179,9 @@ class WaybackClient:
         if not self.lock_file:
             yield
             return
-        with open(self.lock_file, "a", encoding="utf-8") as handle:
+        lock_path = Path(self.lock_file)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield
@@ -225,7 +230,9 @@ class WaybackClient:
             response = self._request("GET", f"/save/status/{job_id}")
             status = response.get("status")
             if status == "success":
-                timestamp = response.get("timestamp", "")
+                timestamp = str(response.get("timestamp") or "")
+                if not timestamp:
+                    raise JobFailedError(f"SPN2 job {job_id} succeeded without timestamp")
                 original_url = response.get("original_url", url)
                 return f"{BASE_URL}/web/{timestamp}id_/{original_url}"
             if status == "pending":

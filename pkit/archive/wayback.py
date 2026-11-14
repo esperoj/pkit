@@ -12,11 +12,12 @@ import binascii
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Self
+from urllib.parse import quote
 
 from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
-from pkit.archive.remote import RemoteFile, Status, split_wayback, wayback_location
+from pkit.archive.remote import WAYBACK, RemoteFile, Status, split_wayback, wayback_location
 from pkit.lib.http import HttpClient, HttpError
 from pkit.wayback import client as wayback_client
 
@@ -54,8 +55,7 @@ class WaybackBackend:
     ) -> None:
         self.prefix = prefix.strip("/")
         self.base_url = base_url.rstrip("/")
-        target = f"{stage.rstrip('/')}/{self.prefix}" if self.prefix else stage
-        self.stage = RcloneBackend(target)
+        self.stage = RcloneBackend(RcloneBackend(stage).location(self.prefix))
         self._client = client if client is not None else wayback_client.WaybackClient()
         self._http = http if http is not None else HttpClient()
         self._owned = (client is None, http is None)
@@ -77,8 +77,10 @@ class WaybackBackend:
     def url_for(self, relpath: str) -> str:
         if not self.base_url:
             raise InputError("wayback_url is not configured ([archive] wayback_url)")
-        parts = [self.base_url, self.prefix, relpath]
-        return "/".join(part.strip("/") for part in parts if part)
+        segments = [
+            quote(part.strip("/"), safe="/") for part in (self.prefix, relpath) if part.strip("/")
+        ]
+        return "/".join([self.base_url, *segments])
 
     # Sequence, not list: the method named `list` below shadows the builtin
     # inside the class body, so `list[...]` would not resolve as a type here.
@@ -92,9 +94,9 @@ class WaybackBackend:
 
     def list(self) -> Sequence[RemoteFile]:
         """One CDX prefix query: every 200 capture under the staging URL."""
-        url = self.url_for("") + "/"
-        oldest: dict[tuple[str, str], tuple[str, str]] = {}
-        for capture in self._captures(url, "prefix"):
+        prefix_url = self.url_for("") + "/"
+        oldest: dict[tuple[str, str], str] = {}
+        for capture in self._captures(prefix_url, "prefix"):
             if capture.statuscode != "200" or not capture.digest:
                 continue
             sha1 = _sha1(capture.digest)
@@ -102,20 +104,21 @@ class WaybackBackend:
                 continue
             key = (sha1, capture.original)
             current = oldest.get(key)
-            if current is None or capture.timestamp < current[0]:
-                oldest[key] = (capture.timestamp, capture.original)
+            if current is None or capture.timestamp < current:
+                oldest[key] = capture.timestamp
         out = []
-        for (sha1, original), (timestamp, url) in oldest.items():
-            location = wayback_location(f"{wayback_client.BASE_URL}/web/{timestamp}id_/{url}")
+        for (sha1, original), timestamp in oldest.items():
+            location = wayback_location(f"{wayback_client.BASE_URL}/web/{timestamp}id_/{original}")
             out.append(RemoteFile(location=location, hashes=(f"sha1:{sha1}",)))
         return out
 
     def copy(self, root: Path, entries: Sequence[Entry]) -> Iterator[RemoteFile]:
         """Stage and capture each missing file, yielding as each one lands."""
         for entry in entries:
+            target_url = self.url_for(entry.relpath)
             self.stage.put(entry.path, entry.relpath)
             try:
-                result = self._client.save_url(self.url_for(entry.relpath), opts=SAVE_OPTIONS)
+                result = self._client.save_url(target_url, opts=SAVE_OPTIONS)
             except (wayback_client.RateLimitError, wayback_client.JobTimeoutError) as exc:
                 raise TransientError(str(exc)) from exc
             except wayback_client.WaybackError as exc:
@@ -133,7 +136,7 @@ class WaybackBackend:
             return "unknown"
         for row in rows:
             if row.statuscode != "200":
-                return "mismatch"
+                continue
             sha1 = _sha1(row.digest)
             if sha1 and f"sha1:{sha1}" in want.tokens:
                 return "ok"
@@ -141,10 +144,10 @@ class WaybackBackend:
 
     def fetch(self, location: str, dest: Path) -> None:
         """Download the raw capture payload."""
-        url = location.removeprefix("wayback:")
+        url = location.removeprefix(WAYBACK)
         try:
             self._http.download(url, dest)
         except HttpError as exc:
-            if exc.status_code is None or exc.status_code >= 500:
+            if exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500:
                 raise TransientError(str(exc)) from exc
             raise ArchiveError(str(exc)) from exc

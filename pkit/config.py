@@ -6,12 +6,11 @@ import os
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 __all__ = ["DEFAULT_CONFIG_PATH", "as_bool", "as_path", "load", "pick", "resolve"]
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pkit" / "config.toml"
-T = TypeVar("T")
 
 
 def load(path: str | Path | None = None) -> dict[str, Any]:
