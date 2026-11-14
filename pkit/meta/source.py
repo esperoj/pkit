@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Protocol, Self
 
 from pkit.meta.models import Record
@@ -61,7 +62,12 @@ class Source(Protocol):
 
     def __enter__(self) -> Self: ...
 
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
 
     def match(self, url: str) -> str | None:
         """Return the source-native key for url, or None if not handled."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from types import TracebackType
 from typing import Any, Self
 from urllib.parse import parse_qs, urlparse
 
@@ -22,21 +23,21 @@ _QID_RE = re.compile(r"^Q[1-9]\d*$")
 _QID_PATH_RE = re.compile(r"(?:^|/)(Q[1-9]\d*)(?:\.json)?$", re.IGNORECASE)
 
 BOOK_CLASSES = (
-    "Q571",       # book
-    "Q7725634",   # literary work
+    "Q571",  # book
+    "Q7725634",  # literary work
     "Q47461344",  # written work
-    "Q3331189",   # version, edition or translation
-    "Q8261",      # novel
-    "Q49084",     # short story
-    "Q25379",     # play
-    "Q277759",    # book series
-    "Q1667921",   # novel series
+    "Q3331189",  # version, edition or translation
+    "Q8261",  # novel
+    "Q49084",  # short story
+    "Q25379",  # play
+    "Q277759",  # book series
+    "Q1667921",  # novel series
     "Q21198342",  # manga series
-    "Q725377",    # light novel
+    "Q725377",  # light novel
     "Q53731850",  # light novel series
-    "Q1760610",   # comic book
-    "Q2831984",   # comic book album
-    "Q1004",      # comics
+    "Q1760610",  # comic book
+    "Q2831984",  # comic book album
+    "Q1004",  # comics
 )
 
 
@@ -138,9 +139,13 @@ def _qid(statement: dict[str, Any]) -> str | None:
     if parsed is None:
         return None
     dtype, value = parsed
-    if dtype == "wikibase-entityid" and isinstance(value, dict):
-        if value.get("entity-type", "item") == "item" and value.get("id"):
-            return str(value["id"])
+    if (
+        dtype == "wikibase-entityid"
+        and isinstance(value, dict)
+        and value.get("entity-type", "item") == "item"
+        and value.get("id")
+    ):
+        return str(value["id"])
     return None
 
 
@@ -245,9 +250,7 @@ def has_claim(*props: str) -> Callable[[EntityView], bool]:
 
     def _match(view: EntityView) -> bool:
         return any(
-            _datavalue(stmt) is not None
-            for prop in props
-            for stmt in _statements(view.raw, prop)
+            _datavalue(stmt) is not None for prop in props for stmt in _statements(view.raw, prop)
         )
 
     return _match
@@ -333,7 +336,12 @@ class WikidataSource:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.close()
 
     def match(self, url: str) -> str | None:
@@ -357,7 +365,7 @@ class WikidataSource:
             )
             data = resp.json()
             if not isinstance(data, dict):
-                raise ValueError("Wikidata returned invalid JSON")
+                raise TypeError("Wikidata returned invalid JSON")
             if "error" in data:
                 info = data["error"].get("info") or data["error"].get("code") or "API error"
                 raise ValueError(f"Wikidata API error: {info}")
