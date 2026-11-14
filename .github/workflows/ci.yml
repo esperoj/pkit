@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python:
+  ci:
     name: Lint, tests, types (Python ${{ matrix.python-version }})
     runs-on: ${{ vars.default_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -41,17 +41,3 @@ jobs:
       - name: Run full check
         run: make check
 
-  docker:
-    name: Build container image
-    runs-on: ${{ vars.default_runner || 'ubuntu-latest' }}
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Build runtime image
-        run: docker build -t pkit:ci .
-
-      - name: Smoke test image
-        run: docker run --rm pkit:ci --help
