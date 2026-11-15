@@ -23,10 +23,8 @@ def from_dict(data: dict[str, Any]) -> Record:
     if cls is None:
         raise ValueError(f"unknown record type: {record_type}")
     allowed = {f.name for f in fields(cls)}
-    try:  # unknown keys ignored, so old code tolerates future payloads
-        return cls(**{k: v for k, v in data.items() if k in allowed})
-    except TypeError as exc:
-        raise ValueError(f"invalid data for record type '{record_type}'") from exc
+    # unknown keys ignored, so old code tolerates future payloads
+    return cls(**{k: v for k, v in data.items() if k in allowed})
 
 
 def from_json(payload: str | bytes) -> Record:

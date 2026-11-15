@@ -1,8 +1,9 @@
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import pytest
 
@@ -33,106 +34,78 @@ def db(tmp_path):
         yield meta
 
 
-def test_put_and_get_round_trip(db):
-    db.put(
-        Text(
-            id="t1",
-            title="Pandora Hearts",
-            kind="manga",
-            series=["Pandora Hearts"],
-            genres=["dark fantasy"],
-            author_ids=["p1"],
-        )
-    )
-
-    record = db.get("t1")
-
-    assert isinstance(record, Text)
-    assert record.title == "Pandora Hearts"
-    assert record.kind == "manga"
-    assert record.series == ["Pandora Hearts"]
-    assert record.genres == ["dark fantasy"]
-    assert record.author_ids == ["p1"]
-
-
-def test_software_round_trip(db):
-    db.put(
-        Software(
-            id="s1",
-            title="Tales of the Abyss",
-            kind="game",
-            series=["Tales"],
-            developers=["Namco Tales Studio"],
-            publishers=["Namco"],
-            platforms=["PlayStation 2", "Nintendo 3DS"],
-            genres=["role-playing video game"],
-            identifiers=["wikidata:Q82050", "igdb:tales-of-the-abyss"],
-        )
-    )
-
-    record = db.get("s1")
-
-    assert isinstance(record, Software)
-    assert record.title == "Tales of the Abyss"
-    assert record.kind == "game"
-    assert record.series == ["Tales"]
-    assert record.developers == ["Namco Tales Studio"]
-    assert record.platforms == ["PlayStation 2", "Nintendo 3DS"]
-    assert [r.id for r in db.find(Software, where={"identifiers": "wikidata:Q82050"})] == ["s1"]
-
-
-def test_video_round_trip(db):
-    db.put(
-        Video(
-            id="v1",
-            title="Ghost in the Shell",
-            kind="movie",
-            publication_date="1995-11-18",
-            lang="ja",
-            duration=4800,
-            series=["Ghost in the Shell"],
-            directors=["Mamoru Oshii"],
-            publishers=["Production I.G"],
-            genres=["science fiction"],
-            identifiers=["wikidata:Q900001", "imdb:tt0000001"],
-        )
-    )
-
-    record = db.get("v1")
-
-    assert isinstance(record, Video)
-    assert record.title == "Ghost in the Shell"
-    assert record.kind == "movie"
-    assert record.duration == 4800
-    assert record.directors == ["Mamoru Oshii"]
-    assert [r.id for r in db.find(Video, where={"identifiers": "imdb:tt0000001"})] == ["v1"]
-    assert [r.id for r in db.find(Video, where={"kind": "movie"})] == ["v1"]
+# One generated round-trip per model: every field survives put -> get, and a
+# where-clause finds the row back. New model = one table row, not one test.
+ROUND_TRIPS = [
+    (
+        Text,
+        {
+            "title": "Pandora Hearts",
+            "kind": "manga",
+            "series": ["Pandora Hearts"],
+            "genres": ["dark fantasy"],
+            "author_ids": ["p1"],
+        },
+        {"kind": "manga", "author_ids": "p1"},
+    ),
+    (
+        Software,
+        {
+            "title": "Tales of the Abyss",
+            "kind": "game",
+            "series": ["Tales"],
+            "developers": ["Namco Tales Studio"],
+            "platforms": ["PlayStation 2", "Nintendo 3DS"],
+            "identifiers": ["wikidata:Q82050", "igdb:tales-of-the-abyss"],
+        },
+        {"identifiers": "igdb:tales-of-the-abyss"},
+    ),
+    (
+        Video,
+        {
+            "title": "Ghost in the Shell",
+            "kind": "movie",
+            "duration": 4800,
+            "directors": ["Mamoru Oshii"],
+            "genres": ["science fiction"],
+            "identifiers": ["imdb:tt0000001"],
+        },
+        {"kind": "movie", "duration": 4800},
+    ),
+    (
+        Sound,
+        {
+            "title": "Unravel",
+            "kind": "song",
+            "duration": 240,
+            "performers": ["TK from Ling tosite sigure"],
+            "identifiers": ["isrc:XX0000000000"],
+        },
+        {"identifiers": "isrc:XX0000000000"},
+    ),
+    (
+        Person,
+        {
+            "name": "Jun",
+            "gender": "male",
+            "occupations": ["writer"],
+            "identifiers": ["wikidata:Q42"],
+        },
+        {"name": "Jun"},
+    ),
+]
 
 
-def test_sound_round_trip(db):
-    db.put(
-        Sound(
-            id="a1",
-            title="Unravel",
-            kind="song",
-            publication_date="2014-07-23",
-            lang="ja",
-            duration=240,
-            performers=["TK from Ling tosite sigure"],
-            publishers=["Sony Music"],
-            genres=["alternative rock"],
-            identifiers=["isrc:XX0000000000"],
-        )
-    )
+@pytest.mark.parametrize("cls,values,where", ROUND_TRIPS, ids=lambda v: getattr(v, "__name__", ""))
+def test_round_trip(db, cls, values, where):
+    db.put(cls(id="x1", **values))
 
-    record = db.get("a1")
+    record = db.get("x1")
 
-    assert isinstance(record, Sound)
-    assert record.title == "Unravel"
-    assert record.kind == "song"
-    assert record.duration == 240
-    assert record.performers == ["TK from Ling tosite sigure"]
-    assert [r.id for r in db.find(Sound, where={"identifiers": "isrc:XX0000000000"})] == ["a1"]
+    assert isinstance(record, cls)
+    for name, value in values.items():
+        assert getattr(record, name) == value
+    assert [r.id for r in db.find(cls, where=where)] == ["x1"]
 
 
 def test_note_round_trip_and_subject_filters(db):
@@ -749,8 +722,8 @@ def test_migrate_method_applies_and_reports(tmp_path):
         "0002_person.sql",
         "0003_text.sql",
         "0004_software.sql",
-        "0005_created_indexes.sql",
-        "0006_media.sql",
+        "0005_media.sql",
+        "0006_created_indexes.sql",
     ]
     with MetaDB(path, auto_migrate=False) as db:
         assert db.migrate() == []
@@ -928,7 +901,75 @@ def test_migrate_with_missing_directory_returns_empty(tmp_path):
         assert db.migrate(tmp_path / "no-such-dir") == []
 
 
+@pytest.mark.parametrize("migrations", ["missing-dir", "empty-dir"], ids=["missing", "empty"])
+def test_connect_skips_migration_without_sql_files(tmp_path, migrations):
+    """A missing or empty migrations dir connects fine and builds no tables."""
+    directory = tmp_path / migrations
+    if migrations == "empty-dir":
+        directory.mkdir()
+
+    with MetaDB(tmp_path / "records.db", migrations_dir=directory) as db:
+        tables = db.conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table'"
+        ).fetchone()[0]
+
+    assert tables == 0
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_migrate_on_unwritable_database_fails_cleanly(tmp_path):
+    """The WAL pragma failure is tolerated; the first real write is not."""
+    path = tmp_path / "records.db"
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o444)
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    (extra / "0007_extra.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS extra (id TEXT);\n", encoding="utf-8"
+    )
+
+    with (
+        MetaDB(path, auto_migrate=False, migrations_dir=extra) as db,
+        pytest.raises(sqlite3.OperationalError),
+    ):
+        db.migrate()
+
+
+def test_close_without_context_manager_persists_commits(tmp_path):
+    path = tmp_path / "records.db"
+    db = MetaDB(path)
+    try:
+        db.put(Person(id="p1", name="Jun"))
+        db.commit()
+    finally:
+        db.close()
+
+    with MetaDB(path) as meta:
+        assert meta.get("p1") is not None
+
+
 # --- model layout: unique / array_fields -------------------------------------
+
+
+def test_put_mapping_null_json_fields_stored_as_empty(db):
+    db.put({"id": "n1", "type": "note", "extra": None, "subject_ids": None})
+
+    record = db.get("n1")
+
+    assert isinstance(record, Note)
+    assert record.extra == {}
+    assert record.subject_ids == []
+
+
+def test_find_on_tableless_registered_model_is_empty(db):
+    """A registered model without a table is skipped, not an error."""
+
+    @record_model
+    class Tableless(Record):
+        type: Literal["tableless"] = "tableless"
+
+    assert db.find(Tableless) == []
+    assert db.find("tableless") == []
 
 
 def test_model_derives_unique_and_array_fields():

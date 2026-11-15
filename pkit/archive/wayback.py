@@ -54,13 +54,16 @@ class WaybackBackend:
         self.prefix = prefix.strip("/")
         self.base_url = base_url.rstrip("/")
         self.stage = RcloneBackend(RcloneBackend(stage).location(self.prefix))
+        # Ownership is captured before the fallback rebinding below: whatever
+        # this backend constructs itself, it must also close itself.
+        owned = (client is None, http is None)
         self._client = client if client is not None else wayback_client.WaybackClient()
         if http is None:
             # Downloads share the client's mirror rewrite (and the [http]
             # config), but never its SPN2 Authorization headers.
             http = HttpClient(host_map=self._client.host_map)
         self._http = http
-        self._owned = (client is None, http is None)
+        self._owned = owned
 
     def close(self) -> None:
         """Release only the clients this backend created."""

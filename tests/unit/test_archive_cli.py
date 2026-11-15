@@ -152,6 +152,14 @@ def test_verify_local_ok(run_cli, repo, db_path, added):
     assert out.strip() == "local\tok"
 
 
+def test_verify_rejects_unresolvable_input(run_cli, db_path):
+    code, out, err = run_cli(main, ["verify", "not-a-hash-and-not-a-file"])
+
+    assert code == EXIT_USAGE
+    assert "cannot resolve a content hash" in err
+    assert out == ""
+
+
 def test_verify_json(run_cli, repo, db_path, added):
     code, out, err = run_cli(main, ["verify", str(repo / "manga" / "v1.cbz"), "--json"])
 

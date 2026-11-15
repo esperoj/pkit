@@ -85,6 +85,17 @@ def test_dump_load_round_trip(run_cli, db_path, tmp_path):
     assert record.locations == ["ia:item/a"]
 
 
+def test_dump_repo_path_is_a_file_is_usage_error(run_cli, db_path, tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    code, out, err = run_cli(main, ["dump", str(blocker)])
+
+    assert code == EXIT_USAGE
+    assert "Error:" in err
+    assert out == ""
+
+
 def test_load_missing_repo_is_usage_error(run_cli, db_path, tmp_path):
     code, out, err = run_cli(main, ["load", str(tmp_path / "nope")])
 
@@ -182,8 +193,8 @@ def test_migrate_prints_applied_names(run_cli, db_path):
         "0002_person.sql",
         "0003_text.sql",
         "0004_software.sql",
-        "0005_created_indexes.sql",
-        "0006_media.sql",
+        "0005_media.sql",
+        "0006_created_indexes.sql",
     ]
 
 

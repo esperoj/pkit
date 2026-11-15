@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from pkit.lib.http import HttpClient
 from pkit.meta.models import Person, Record
-from pkit.meta.source import Plan
+from pkit.meta.source import Plan, select_plan
 from pkit.meta.wikidata.extract import (
     _LANG_QIDS,
     PRIMARY_LANGS,
@@ -180,21 +180,6 @@ class WikidataSource:
         )
         return codes[0] if len(codes) == 1 else ""
 
-    def _select_plan(
-        self,
-        probe: EntityView,
-        expected: type[Record] | None,
-    ) -> Plan | None:
-        matching = [plan for plan in self.plans if plan.when(probe)]
-        if expected is not None:
-            for plan in matching:
-                if plan.model is expected:
-                    return plan
-            for plan in self.plans:
-                if plan.model is expected:
-                    return plan
-        return matching[0] if matching else None
-
     def fetch(
         self,
         key: str,
@@ -206,7 +191,7 @@ class WikidataSource:
         if entity is None:
             return None
         probe = EntityView(entity, self._labels)
-        selected = self._select_plan(probe, expected)
+        selected = select_plan(self.plans, probe, expected)
         if selected is None:
             return EntityView(entity, self._labels)
 

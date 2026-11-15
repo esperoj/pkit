@@ -200,7 +200,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         data = payload.encode() if isinstance(payload, str) else payload
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        # A route may lie about Content-Length to simulate a connection that
+        # dies mid-body: extra headers override the computed one.
+        length = extra.pop("Content-Length", None) or str(len(data))
+        self.send_header("Content-Length", length)
         for key, value in extra.items():
             self.send_header(key, value)
         self.end_headers()
@@ -222,7 +225,11 @@ class LocalServer:
         self._server = _Server(("127.0.0.1", 0), _Handler)
         self._server.routes = self.routes
         self._server.requests = self.requests
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # poll_interval bounds shutdown() latency: the default 0.5s poll made
+        # every server-using test pay 0.5s in teardown.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self._thread.start()
 
     @property

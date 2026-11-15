@@ -78,6 +78,13 @@ def test_read_stdin_payload_json_invalid(fake_stdin):
     assert read_stdin_payload(True) == ("http://raw", {})
 
 
+@pytest.mark.parametrize("raw", ["null", "true", "[1, 2]"])
+def test_read_stdin_payload_json_unusable_scalars(fake_stdin, raw):
+    fake_stdin(raw)
+
+    assert read_stdin_payload(True) == (None, {})
+
+
 def test_emit_result_json_dataclass(capsys):
     emit_result(
         Dummy(True, "done"),

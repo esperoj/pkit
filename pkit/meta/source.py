@@ -12,7 +12,7 @@ from typing import Any, Protocol, Self
 
 from pkit.meta.models import Record
 
-__all__ = ["LinkRef", "Plan", "Source", "const", "first"]
+__all__ = ["LinkRef", "Plan", "Source", "first", "select_plan"]
 
 
 def first(*extractors: Callable[[Any], Any]) -> Callable[[Any], Any]:
@@ -26,11 +26,6 @@ def first(*extractors: Callable[[Any], Any]) -> Callable[[Any], Any]:
         return ""
 
     return _extract
-
-
-def const(value: Any) -> Callable[[Any], Any]:
-    """Return a constant value regardless of the input item."""
-    return lambda _item: value
 
 
 @dataclass(frozen=True)
@@ -50,6 +45,25 @@ class Plan:
     fields: Mapping[str, Callable[[Any], Any]]
     links: Mapping[str, LinkRef] = field(default_factory=dict)
     key: Callable[[Any], Any] | None = None
+
+
+def select_plan(
+    plans: Sequence[Plan],
+    item: Any,
+    expected: type[Record] | None = None,
+) -> Plan | None:
+    """The plan for one item: first when() match, or the expected model's plan.
+
+    With expected set, a matching plan of that model wins over other matches;
+    when nothing matches at all the expected model's plan is still returned
+    (the caller asked for that shape), else None.
+    """
+    matched = [plan for plan in plans if plan.when(item)]
+    if expected is not None:
+        for plan in (*matched, *plans):
+            if plan.model is expected:
+                return plan
+    return matched[0] if matched else None
 
 
 class Source(Protocol):

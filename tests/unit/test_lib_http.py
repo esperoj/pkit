@@ -363,6 +363,71 @@ def test_request_redirect_keeps_authorization_on_mapped_host(http_server):
     assert http_server.requests[-1]["headers"]["Authorization"] == "LOW key:secret"
 
 
+def test_request_redirect_keeps_authorization_across_configured_mirrors(http_server):
+    """Two host_map keys sharing one server: the second mirror is trusted."""
+    http_server.route("GET", "/thing", status=302, headers={"Location": "/other"})
+    http_server.route("GET", "/other", text="ok")
+
+    with HttpClient(
+        host_map={
+            "example.com": f"127.0.0.1:{http_server.port}",
+            "mirror.example.com": f"localhost:{http_server.port}",
+        },
+        headers={"Authorization": "LOW key:secret"},
+    ) as http:
+        response = http.request("GET", "http://example.com/thing", allow_redirects=False)
+
+    assert response.text == "ok"
+    assert http_server.requests[-1]["headers"]["Authorization"] == "LOW key:secret"
+
+
+def test_request_redirect_keeps_authorization_on_proxy_host(http_server):
+    """A mirror hop that lands on the proxy stays on trusted ground.
+
+    The first URL is host-mapped (never proxied); the redirect target is not
+    mapped, so it is routed through the proxy — whose host is trusted.
+    """
+    proxied = f"/http://127.0.0.1:{http_server.port}/other"
+    http_server.route("GET", "/thing", status=302, headers={"Location": "/other"})
+    http_server.route("GET", proxied, text="ok")
+
+    with HttpClient(
+        host_map={"example.com": f"127.0.0.1:{http_server.port}"},
+        proxy_prefix=f"http://localhost:{http_server.port}",
+        headers={"Authorization": "LOW key:secret"},
+    ) as http:
+        response = http.request("GET", "http://example.com/thing")
+
+    assert response.text == "ok"
+    assert http_server.requests[-1]["headers"]["Authorization"] == "LOW key:secret"
+
+
+def test_request_redirect_with_hostless_proxy_prefix_drops_cross_host_auth(http_server):
+    """A proxy prefix without a hostname cannot vouch for cross-host hops.
+
+    The first URL is host-mapped (never proxied); the redirect target is a
+    second configured key, so it resolves onto a different mirror host. The
+    hostless prefix contributes no trusted host, so Authorization is gone.
+    """
+    http_server.route(
+        "GET", "/thing", status=302, headers={"Location": "http://mirror.example.com/other"}
+    )
+    http_server.route("GET", "/other", text="ok")
+
+    with HttpClient(
+        host_map={
+            "example.com": f"127.0.0.1:{http_server.port}",
+            "mirror.example.com": f"localhost:{http_server.port}",
+        },
+        proxy_prefix="opaque-prefix",
+        headers={"Authorization": "LOW key:secret"},
+    ) as http:
+        response = http.request("GET", "http://example.com/thing")
+
+    assert response.text == "ok"
+    assert "Authorization" not in http_server.requests[-1]["headers"]
+
+
 def test_request_redirect_drops_authorization_cross_host(http_server, monkeypatch):
     http_server.route("GET", "/thing", status=302, headers={"Location": "https://evil.com/x"})
 
@@ -435,3 +500,18 @@ def test_request_redirect_without_location_returns_response(http_server):
 
     assert response.status_code == 302
     assert response.text == "stuck"
+
+
+def test_download_cleans_up_when_the_stream_dies(http_server, tmp_path):
+    """A body shorter than its Content-Length aborts and leaves no file."""
+    http_server.route(
+        "GET",
+        "/truncated",
+        text="only a bit",
+        headers={"Content-Length": "4096", "Connection": "close"},
+    )
+
+    with HttpClient(timeout=5) as http, pytest.raises(HttpError):
+        http.download(f"{http_server.url}/truncated", tmp_path / "partial.bin")
+
+    assert not (tmp_path / "partial.bin").exists()

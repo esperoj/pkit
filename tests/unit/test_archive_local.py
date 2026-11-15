@@ -232,3 +232,11 @@ def test_find_cas_requires_git_or_override(tmp_path):
 
     result = archive.add(lonely, db_path=tmp_path / "r.db", cas_dir=tmp_path / "cas")
     assert result.added == 1
+
+
+def test_load_file_rejects_non_file_record_sharing_the_id(db_path):
+    with MetaDB(db_path) as meta:
+        meta.put(Person(id="p1", name="Ghost"))
+
+    with ArchiveDB(db_path) as db, pytest.raises(InputError, match="is not a file record"):
+        db.load_file("p1")

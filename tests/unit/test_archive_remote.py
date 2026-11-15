@@ -31,6 +31,20 @@ def _record_locations(db_path, record_id, locations: list[str]) -> None:
         meta.put(replace(_stored(db_path, record_id), locations=locations))
 
 
+def test_merge_locations_treats_unparsable_wayback_as_raw():
+    from pkit.archive.remote import merge_locations
+
+    junk = "wayback:not-a-capture-url"
+    assert merge_locations([], [junk]) == [junk]
+    assert merge_locations([junk], [junk]) == [junk]  # raw keys dedupe
+
+
+def test_selects_never_matches_unparsable_wayback_location():
+    from pkit.archive.remote import selects
+
+    assert not selects("wayback:junk", "wayback:https://host", wayback_url="https://host")
+
+
 class TestMatch:
     def test_registers_known_hash(self, repo, db_path, added, install_backend):
         install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])

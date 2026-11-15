@@ -26,3 +26,8 @@ def test_run_missing_binary():
 def test_run_rejects_empty_args():
     with pytest.raises(shell.ShellError):
         shell.run([])
+
+
+def test_run_timeout_raises_shell_error():
+    with pytest.raises(shell.ShellError, match="timed out"):
+        shell.run([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.05)

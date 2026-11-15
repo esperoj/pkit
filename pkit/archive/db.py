@@ -37,7 +37,8 @@ class ArchiveDB(MetaDB):
     def file_record(self, hashes: Hashes, size: int) -> File:
         """Create or merge the content row for these hashes."""
         probe = File(id=hashes.record_id, sha256=hashes.sha256, sha1=hashes.sha1, md5=hashes.md5)
-        stored = self.get(probe)
+        # A File probe only reads the files table, so the hit is always a File.
+        stored = cast(File, self.get(probe))
         if stored is None:
             created = File(
                 id=hashes.record_id,
@@ -47,8 +48,6 @@ class ArchiveDB(MetaDB):
                 md5=hashes.md5,
             )
             return cast(File, self.put(created))
-        if not isinstance(stored, File):
-            raise InputError(f"{hashes.record_id} is not a file record")
         identifiers = [
             token for token in stored.identifiers if not token.startswith(HASH_TOKEN_PREFIXES)
         ]

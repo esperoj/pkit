@@ -2,6 +2,11 @@
 
 Adding a type means adding its classes, kind mapping, and Plan here —
 nothing else. QIDs and PIDs are Wikidata's own, so plans stay data.
+
+One QID -> kind table per plan is the single source of truth: `when`
+matches its keys, `kind` reads its values. Directors and performers stay
+plain strings by design — Person links are a Text-only feature (the
+author is the one relationship worth its own table).
 """
 
 from pkit.meta.models import Person, Software, Sound, Text, Video
@@ -22,85 +27,88 @@ from pkit.meta.wikidata.extract import (
 )
 
 __all__ = [
-    "GAME_CLASSES",
+    "GAME_KINDS",
     "PERSON_PLAN",
     "PLANS",
-    "SOFTWARE_CLASSES",
+    "SOFTWARE_KINDS",
     "SOFTWARE_PLAN",
-    "SOUND_CLASSES",
+    "SOUND_KINDS",
     "SOUND_PLAN",
-    "TEXT_CLASSES",
+    "TEXT_KINDS",
     "TEXT_PLAN",
-    "VIDEO_CLASSES",
+    "VIDEO_KINDS",
     "VIDEO_PLAN",
 ]
 
-GAME_CLASSES = (
-    "Q7889",  # video game
-    "Q7058673",  # video game series
-    "Q689445",  # visual novel
-    "Q209163",  # expansion add-on
-    "Q865493",  # video game mod
-)
+# Games ride Software; their classes map to kind "game" and any game-ID
+# property implies the same, so game detection stays data.
+GAME_KINDS = {
+    "Q7889": "game",  # video game
+    "Q7058673": "game",  # video game series
+    "Q689445": "game",  # visual novel
+    "Q209163": "game",  # expansion add-on
+    "Q865493": "game",  # video game mod
+}
 
-SOFTWARE_CLASSES = (
-    "Q7397",  # software
-    "Q166142",  # application software
-    "Q341",  # free software
-    "Q506883",  # free and open-source software
-    "Q1130645",  # open-source software
-    "Q218616",  # proprietary software
-    "Q188860",  # software library
-    "Q9135",  # operating system
-    "Q189210",  # web application
-)
+SOFTWARE_KINDS = {
+    **GAME_KINDS,
+    "Q7397": "software",  # software
+    "Q166142": "software",  # application software
+    "Q341": "software",  # free software
+    "Q506883": "software",  # free and open-source software
+    "Q1130645": "software",  # open-source software
+    "Q218616": "software",  # proprietary software
+    "Q188860": "library",  # software library
+    "Q9135": "os",  # operating system
+    "Q189210": "software",  # web application
+}
 
-TEXT_CLASSES = (
-    "Q571",  # book
-    "Q7725634",  # literary work
-    "Q47461344",  # written work
-    "Q3331189",  # version, edition or translation
-    "Q8261",  # novel
-    "Q49084",  # short story
-    "Q25379",  # play
-    "Q277759",  # book series
-    "Q1667921",  # novel series
-    "Q8274",  # manga
-    "Q21198342",  # manga series
-    "Q747381",  # light novel
-    "Q53731850",  # light novel series
-    "Q104213567",  # light novel series
-    "Q725377",  # graphic novel
-    "Q1760610",  # comic book
-    "Q2831984",  # comic book album
-    "Q1004",  # comics
-    "Q191067",  # article
-    "Q13442814",  # scholarly article
-    "Q5633421",  # scientific journal
-    "Q737498",  # academic journal
-    "Q1057179",  # user guide / manual
-    "Q1413406",  # technical documentation
-)
+TEXT_KINDS = {
+    "Q571": "book",  # book
+    "Q7725634": "text",  # literary work
+    "Q47461344": "text",  # written work
+    "Q3331189": "book",  # version, edition or translation
+    "Q8261": "novel",  # novel
+    "Q49084": "short story",  # short story
+    "Q25379": "play",  # play
+    "Q277759": "book",  # book series
+    "Q1667921": "novel",  # novel series
+    "Q8274": "manga",  # manga
+    "Q21198342": "manga",  # manga series
+    "Q747381": "light novel",  # light novel
+    "Q53731850": "light novel",  # light novel series
+    "Q104213567": "light novel",  # light novel series
+    "Q725377": "comic",  # graphic novel
+    "Q1760610": "comic",  # comic book
+    "Q2831984": "comic",  # comic book album
+    "Q1004": "comic",  # comics
+    "Q191067": "article",  # article
+    "Q13442814": "article",  # scholarly article
+    "Q5633421": "journal",  # scientific journal
+    "Q737498": "journal",  # academic journal
+    "Q1057179": "manual",  # user guide / manual
+    "Q1413406": "manual",  # technical documentation
+}
 
-VIDEO_CLASSES = (
-    "Q11424",  # film
-    "Q24856",  # film series
-    "Q5398426",  # television series
-    "Q581714",  # animated series
-    "Q1107",  # anime
-    "Q21191270",  # television series episode
-    "Q1464125",  # web series episode
-    "Q110879246",  # video work
-)
+VIDEO_KINDS = {
+    "Q11424": "movie",  # film
+    "Q24856": "series",  # film series
+    "Q5398426": "series",  # television series
+    "Q581714": "series",  # animated series
+    "Q1107": "anime",  # anime
+    "Q21191270": "episode",  # television series episode
+    "Q1464125": "episode",  # web series episode
+    "Q110879246": "video",  # video work
+}
 
-SOUND_CLASSES = (
-    "Q7366",  # song
-    "Q482994",  # album
-    "Q134556",  # single
-    "Q169930",  # extended play
-    "Q24634210",  # podcast show
-    "Q61855877",  # podcast episode
-)
+SOUND_KINDS = {
+    "Q7366": "song",  # song
+    "Q482994": "album",  # album
+    "Q134556": "single",  # single
+    "Q169930": "ep",  # extended play
+    "Q24634210": "podcast",  # podcast show
+    "Q61855877": "episode",  # podcast episode
+}
 
 _GAME_ID_PROPS = (
     "P1733",  # Steam application ID
@@ -130,60 +138,11 @@ _VIDEO_ID_PROPS = ("P345", "P4947", "P4983")  # IMDb ID, TMDB movie ID, TMDB TV 
 
 _SOUND_ID_PROPS = ("P436", "P1243")  # MusicBrainz release group ID, ISRC
 
-_SOFTWARE_KINDS = {
-    "Q188860": "library",
-    "Q9135": "os",
-}
-
-_TEXT_KINDS = {
-    "Q8274": "manga",
-    "Q21198342": "manga",
-    "Q747381": "light novel",
-    "Q53731850": "light novel",
-    "Q104213567": "light novel",
-    "Q1004": "comic",
-    "Q1760610": "comic",
-    "Q2831984": "comic",
-    "Q725377": "comic",
-    "Q25379": "play",
-    "Q49084": "short story",
-    "Q8261": "novel",
-    "Q1667921": "novel",
-    "Q13442814": "article",
-    "Q191067": "article",
-    "Q5633421": "journal",
-    "Q737498": "journal",
-    "Q1057179": "manual",
-    "Q1413406": "manual",
-    "Q571": "book",
-    "Q277759": "book",
-    "Q3331189": "book",
-}
-
-_VIDEO_KINDS = {
-    "Q11424": "movie",
-    "Q24856": "series",
-    "Q5398426": "series",
-    "Q581714": "series",
-    "Q1107": "anime",
-    "Q21191270": "episode",
-    "Q1464125": "episode",
-}
-
-_SOUND_KINDS = {
-    "Q7366": "song",
-    "Q482994": "album",
-    "Q134556": "single",
-    "Q169930": "ep",
-    "Q24634210": "podcast",
-    "Q61855877": "episode",
-}
-
 
 def _software_kind(view: EntityView) -> str:
-    if has_class(*GAME_CLASSES)(view) or has_claim(*_GAME_ID_PROPS)(view):
+    if has_claim(*_GAME_ID_PROPS)(view):
         return "game"
-    return kind_of(_SOFTWARE_KINDS, default="software")(view)
+    return kind_of(SOFTWARE_KINDS, default="software")(view)
 
 
 def _duration(view: EntityView) -> int:
@@ -221,8 +180,7 @@ PERSON_PLAN = Plan(
 SOFTWARE_PLAN = Plan(
     model=Software,
     when=lambda view: (
-        has_class(*GAME_CLASSES, *SOFTWARE_CLASSES)(view)
-        or has_claim(*_GAME_ID_PROPS, *_SOFTWARE_PROPS)(view)
+        has_class(*SOFTWARE_KINDS)(view) or has_claim(*_GAME_ID_PROPS, *_SOFTWARE_PROPS)(view)
     ),
     key=lambda view: str(view.raw.get("id") or ""),
     fields={
@@ -263,11 +221,11 @@ SOFTWARE_PLAN = Plan(
 
 TEXT_PLAN = Plan(
     model=Text,
-    when=lambda view: has_class(*TEXT_CLASSES)(view) or has_claim(*_TEXT_ID_PROPS)(view),
+    when=lambda view: has_class(*TEXT_KINDS)(view) or has_claim(*_TEXT_ID_PROPS)(view),
     key=lambda view: str(view.raw.get("id") or ""),
     fields={
         "title": work_title(),
-        "kind": kind_of(_TEXT_KINDS, props=("P7937", "P31"), default="text"),
+        "kind": kind_of(TEXT_KINDS, props=("P7937", "P31"), default="text"),
         "publication_date": first(claim("P577"), claim("P571")),
         "lang": claim("P407", lang="en"),
         "description": description(),
@@ -294,11 +252,11 @@ TEXT_PLAN = Plan(
 
 VIDEO_PLAN = Plan(
     model=Video,
-    when=lambda view: has_class(*VIDEO_CLASSES)(view) or has_claim(*_VIDEO_ID_PROPS)(view),
+    when=lambda view: has_class(*VIDEO_KINDS)(view) or has_claim(*_VIDEO_ID_PROPS)(view),
     key=lambda view: str(view.raw.get("id") or ""),
     fields={
         "title": work_title(),
-        "kind": kind_of(_VIDEO_KINDS, default="video"),
+        "kind": kind_of(VIDEO_KINDS, default="video"),
         "publication_date": first(claim("P577"), claim("P571")),
         "lang": claim("P407", lang="en"),
         "description": description(),
@@ -318,11 +276,11 @@ VIDEO_PLAN = Plan(
 
 SOUND_PLAN = Plan(
     model=Sound,
-    when=lambda view: has_class(*SOUND_CLASSES)(view) or has_claim(*_SOUND_ID_PROPS)(view),
+    when=lambda view: has_class(*SOUND_KINDS)(view) or has_claim(*_SOUND_ID_PROPS)(view),
     key=lambda view: str(view.raw.get("id") or ""),
     fields={
         "title": work_title(),
-        "kind": kind_of(_SOUND_KINDS, default="sound"),
+        "kind": kind_of(SOUND_KINDS, default="sound"),
         "publication_date": first(claim("P577"), claim("P571")),
         "lang": claim("P407", lang="en"),
         "description": description(),

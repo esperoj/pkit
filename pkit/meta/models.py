@@ -132,8 +132,8 @@ class Video(Record):
     """A moving-picture work: movie, series, episode, anime, ... (kind picks).
 
     duration is seconds. directors and publishers are plain strings, like
-    Software's developers — Person links stay a Text-only feature until a
-    second model actually needs them.
+    Software's developers — deliberately no Person links: directors are
+    taxonomy, not relationships worth their own link table.
     """
 
     type: Literal["video"] = "video"

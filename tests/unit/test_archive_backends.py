@@ -10,6 +10,7 @@ from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import RemoteFile
 from pkit.archive.wayback import WaybackBackend
+from pkit.lib.http import HttpClient
 from pkit.lib.shell import CommandNotFound, ShellError
 from pkit.wayback.client import BASE_URL, CdxCapture, WaybackClient
 
@@ -66,6 +67,33 @@ class TestRcloneBackend:
         rclone.enqueue("not-json{")
         with RcloneBackend("ia:x") as backend, pytest.raises(ArchiveError, match="invalid JSON"):
             backend.list()
+
+    def test_verify_missing_when_rclone_reports_not_found(self, rclone):
+        rclone.enqueue(ShellError("rclone: not found", returncode=3))
+        with RcloneBackend("ia:x") as backend:
+            assert backend.verify("ia:x/gone", WANT) == "missing"
+
+    def test_verify_maps_other_shell_failures_to_archive_error(self, rclone):
+        rclone.enqueue(ShellError("rclone exited 1", returncode=1))
+        with RcloneBackend("ia:x") as backend, pytest.raises(ArchiveError):
+            backend.verify("ia:x/f", WANT)
+
+    def test_list_accepts_single_object_answer(self, rclone):
+        rclone.enqueue(json.dumps({"Name": "single.bin", "IsDir": False, "Hashes": {}}))
+        with RcloneBackend("ia:x") as backend:
+            assert backend.list()[0].location == "ia:x/single.bin"
+
+    def test_list_ignores_non_row_json(self, rclone):
+        rclone.enqueue("42")
+        with RcloneBackend("ia:x") as backend:
+            assert backend.list() == []
+
+    def test_put_uploads_by_copyto(self, rclone, tmp_path):
+        source = tmp_path / "f"
+        source.write_bytes(PAYLOAD)
+        with RcloneBackend("ia:x") as backend:
+            backend.put(source, "dir/f")
+        assert rclone.calls[0][1:] == ["copyto", "--copy-links", str(source), "ia:x/dir/f"]
 
     @pytest.mark.parametrize(
         ("row", "status"),
@@ -237,6 +265,57 @@ class TestWaybackBackend:
         fake_http.on(f"{BASE_URL}/save", status=429, text="rate limit")
 
         with self.backend(fake_http) as backend, pytest.raises(TransientError, match="429"):
+            list(backend.copy(tmp_path, [entry]))
+
+    def test_close_closes_only_what_it_constructed(self, fake_http, monkeypatch):
+        closed: list[str] = []
+        monkeypatch.setattr(HttpClient, "close", lambda self: closed.append("http"))
+        monkeypatch.setattr(WaybackClient, "close", lambda self: closed.append("client"))
+
+        # Nothing injected: the backend closes the client and http it built.
+        WaybackBackend("manga", base_url="https://host").close()
+        assert closed == ["client", "http"]
+
+        # Client injected: its transport stays open, the built http closes.
+        closed.clear()
+        client = WaybackClient(http=fake_http, lock_file="", timeout=0.1)
+        WaybackBackend("manga", base_url="https://host", client=client).close()
+        assert closed == ["http"]
+
+    def test_list_maps_rate_limit_to_transient(self, fake_http):
+        fake_http.on(f"{BASE_URL}/cdx/search/cdx", status=429, text="slow down")
+        with self.backend(fake_http) as backend, pytest.raises(TransientError, match="429"):
+            backend.list()
+
+    def test_list_maps_wayback_errors_to_archive_error(self, fake_http):
+        fake_http.on(f"{BASE_URL}/cdx/search/cdx", status=500, text="boom")
+        with self.backend(fake_http) as backend, pytest.raises(ArchiveError, match="500"):
+            backend.list()
+
+    def test_list_keeps_oldest_when_a_newer_capture_came_first(self, fake_http):
+        self.cdx(
+            fake_http,
+            [
+                _capture(_digest(), "20260303000000"),
+                _capture(_digest(), "20260101000000"),
+                _capture(_digest(), "20260202000000"),  # newer than the oldest: ignored
+            ],
+        )
+
+        with self.backend(fake_http) as backend:
+            files = backend.list()
+
+        assert "20260101000000" in files[0].location
+
+    def test_copy_maps_wayback_errors_to_archive_error(
+        self, fake_http, disable_sleep, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(RcloneBackend, "put", lambda self, src, rel: None)
+        entry = Entry(path=tmp_path / "v1.cbz", relpath="v1.cbz", size=7, hashes=WANT)
+        fake_http.on(f"{BASE_URL}/save/status/user", json={"available": 1})
+        fake_http.on(f"{BASE_URL}/save", status=500, text="broken")
+
+        with self.backend(fake_http) as backend, pytest.raises(ArchiveError, match="500"):
             list(backend.copy(tmp_path, [entry]))
 
     def test_verify_ok_and_mismatch(self, fake_http):

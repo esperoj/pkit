@@ -1,6 +1,7 @@
 -- media.sql: videos, sounds, and the notes that annotate any record.
 -- notes.subject_ids is a JSON array (any record id), not a link table:
 -- one attachment mechanism for every present and future record type.
+-- created_at indexes live in 0006_created_indexes.sql with every other table.
 
 CREATE TABLE IF NOT EXISTS videos (
     id TEXT PRIMARY KEY NOT NULL CHECK (id <> ''),
@@ -150,7 +151,3 @@ BEGIN
     SELECT RAISE(ABORT, 'notes.id is immutable');
 END;
 
--- created.sql follow-up: created_at indexes so find(sort="created") stays cheap.
-CREATE INDEX IF NOT EXISTS videos_created ON videos(created_at);
-CREATE INDEX IF NOT EXISTS sounds_created ON sounds(created_at);
-CREATE INDEX IF NOT EXISTS notes_created ON notes(created_at);

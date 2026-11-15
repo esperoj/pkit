@@ -7,7 +7,6 @@ cycle protection and identifier-based deduplication.
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,7 @@ from pkit.meta import config
 from pkit.meta.db import MetaDB
 from pkit.meta.models import Record, new_id, type_name
 from pkit.meta.serialize import from_dict
-from pkit.meta.source import Plan, Source
+from pkit.meta.source import Source, select_plan
 from pkit.meta.wikidata import WikidataSource
 
 __all__ = ["SOURCES", "VALID_LANGS", "load"]
@@ -65,22 +64,6 @@ def _load_repo(path: Path, *, db_path: str | Path | None) -> int:
     return count
 
 
-def _select_plan(
-    plans: Sequence[Plan],
-    item: Any,
-    expected: type[Record] | None = None,
-) -> Plan | None:
-    matched = [plan for plan in plans if plan.when(item)]
-    if expected is not None:
-        for plan in matched:
-            if plan.model is expected:
-                return plan
-        for plan in plans:
-            if plan.model is expected:
-                return plan
-    return matched[0] if matched else None
-
-
 def _dedupe(items: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
 
@@ -125,18 +108,13 @@ def _merge_record(
     payload["extra"] = _merge_extra(existing_extra, incoming_extra)
 
     link_keys = {link.key for link in model.links}
-    list_fields = {f.name for f in fields(model) if f.default_factory is list} | link_keys
-    dict_fields = {f.name for f in fields(model) if f.default_factory is dict}
 
     for name in (*model.json_fields, *link_keys):
         if name in {"identifiers", "extra"}:
             continue
         prev = getattr(existing, name) if existing is not None else None
         curr = values.get(name)
-        if name in list_fields:
-            payload[name] = _dedupe([*(prev or ()), *(curr or ())])
-        elif name in dict_fields:
-            payload[name] = {**(prev or {}), **(curr or {})}
+        payload[name] = _dedupe([*(prev or ()), *(curr or ())])
 
     for name in model.scalar_fields:
         prev = getattr(existing, name) if existing is not None else None
@@ -185,7 +163,7 @@ def _load_source(
                     raise ValueError(f"{src.name} item {key!r} not found")
                 return None
 
-            plan = _select_plan(src.plans, item, expected)
+            plan = select_plan(src.plans, item, expected)
             if plan is None:
                 visiting.discard(key)
                 if expected is None:

@@ -45,6 +45,10 @@ lang = "auto"
 - *Translations in ~extra["i18n"]~*: every available entry in ~en~, ~vi~,
   ~zh~, plus the item's original language when outside those three (at most
   four entries), is stored under ~extra.i18n.<lang>~.
+- *One mapping per type*: each import plan's QID-to-kind table (see
+  ~pkit/meta/wikidata/plans.py~) drives both what it matches (~P31~
+  classes and external-ID properties) and the ~kind~ it assigns, so
+  adding a type stays one table plus one ~Plan~.
 
 * Record types
 
