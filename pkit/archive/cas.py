@@ -152,17 +152,16 @@ def ingest(source: Path, cas_dir: Path, hashes: Hashes) -> Path:
     try:
         os.replace(source, obj)
     except OSError:
-        # Cross-device fallback: stage inside obj.parent so obj is replaced atomically.
+        # Cross-device fallback: stage inside obj.parent so obj is replaced
+        # atomically. The staging file is cleaned up on any outcome.
         fd, tmp_name = tempfile.mkstemp(dir=obj.parent, prefix=f".{obj.name}.")
         os.close(fd)
         tmp = Path(tmp_name)
         try:
             shutil.copy2(source, tmp)
-            tmp.chmod(OBJECT_MODE)
             os.replace(tmp, obj)
-        except BaseException:
+        finally:
             tmp.unlink(missing_ok=True)
-            raise
         source.unlink()
     obj.chmod(OBJECT_MODE)
     return obj

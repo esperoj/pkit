@@ -1,4 +1,5 @@
 -- file.sql
+
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY NOT NULL CHECK (id LIKE 'sha256:%'),
     slug TEXT NOT NULL CHECK (slug <> '') UNIQUE,
@@ -18,6 +19,9 @@ CREATE TABLE IF NOT EXISTS files (
 
 CREATE INDEX IF NOT EXISTS files_updated
     ON files(updated_at);
+
+CREATE INDEX IF NOT EXISTS files_created
+    ON files(created_at);
 
 -- Partial indexes: only rows that actually carry a hash are indexed.
 CREATE INDEX IF NOT EXISTS files_sha256

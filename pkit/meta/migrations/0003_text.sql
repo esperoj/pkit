@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS texts (
 CREATE INDEX IF NOT EXISTS texts_updated
 ON texts(updated_at);
 
+CREATE INDEX IF NOT EXISTS texts_created
+ON texts(created_at);
+
 -- Intentionally no foreign-key constraints.
 -- This allows importing texts before persons exist.
 CREATE TABLE IF NOT EXISTS text_authors (

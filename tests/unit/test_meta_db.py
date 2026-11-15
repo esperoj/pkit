@@ -567,7 +567,7 @@ def test_migrations_apply_once(tmp_path):
     with MetaDB(path) as meta:
         count = meta.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
 
-    assert count == 6
+    assert count == 7
 
 
 def test_migrations_create_expected_indexes(tmp_path):
@@ -708,6 +708,45 @@ def test_find_rejects_unknown_sort(db):
         db.find(Text, sort="bogus")
 
 
+def test_find_sorts_by_scalar_field(db):
+    db.put(Text(id="t1", title="beta"))
+    db.put(Text(id="t2", title="alpha"))
+
+    assert [r.title for r in db.find(Text, sort="title")] == ["alpha", "beta"]
+    assert [r.title for r in db.find(Text, sort="-title")] == ["beta", "alpha"]
+
+
+def test_find_sorts_by_scalar_number(db):
+    db.put(Video(id="v2", duration=4800))
+    db.put(Video(id="v1", duration=240))
+
+    assert [r.id for r in db.find(Video, sort="duration")] == ["v1", "v2"]
+    assert [r.id for r in db.find(Video, sort="-duration")] == ["v2", "v1"]
+
+
+def test_find_scalar_sort_tie_breaks_on_id(db):
+    db.put(Text(id="t2", title="same"))
+    db.put(Text(id="t1", title="same"))
+
+    assert [r.id for r in db.find(Text, sort="title")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="-title")] == ["t2", "t1"]
+
+
+def test_find_sort_narrows_to_models_carrying_the_column(db):
+    db.put(Text(id="t1", title="beta"))
+    db.put(Person(id="p1", name="Jun"))
+
+    assert [r.id for r in db.find(sort="title")] == ["t1"]
+    assert [r.id for r in db.find(sort="name")] == ["p1"]
+
+
+def test_find_rejects_sort_the_model_lacks(db):
+    with pytest.raises(ValueError, match="unknown sort"):
+        db.find(Person, sort="title")
+    with pytest.raises(ValueError, match="sortable field"):
+        db.find(sort="bogus")
+
+
 # --- migrate() and zero-write connections ------------------------------------
 
 
@@ -722,8 +761,9 @@ def test_migrate_method_applies_and_reports(tmp_path):
         "0002_person.sql",
         "0003_text.sql",
         "0004_software.sql",
-        "0005_media.sql",
-        "0006_created_indexes.sql",
+        "0005_video.sql",
+        "0006_sound.sql",
+        "0007_note.sql",
     ]
     with MetaDB(path, auto_migrate=False) as db:
         assert db.migrate() == []
@@ -768,7 +808,7 @@ def test_migrate_skips_concurrently_applied(tmp_path, monkeypatch):
     assert applied == []
     with MetaDB(path, readonly=True) as db:
         count = db.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
-    assert count == 6
+    assert count == 7
 
 
 def test_connect_executes_zero_writes_when_current(tmp_path, monkeypatch):

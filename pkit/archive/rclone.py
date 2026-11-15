@@ -8,7 +8,7 @@ import json
 import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Self
+from typing import NoReturn, Self
 
 from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
@@ -58,7 +58,8 @@ class RcloneBackend:
         sep = "" if self.prefix.endswith(":") else "/"
         return f"{self.prefix}{sep}{relpath}"
 
-    def _raise(self, exc: shell.ShellError) -> None:
+    def _raise(self, exc: shell.ShellError) -> NoReturn:
+        """Map one shell failure onto the archive error it means."""
         if isinstance(exc, shell.CommandNotFound):
             raise InputError(str(exc)) from exc
         if exc.returncode == _TEMPFAIL:
@@ -70,7 +71,6 @@ class RcloneBackend:
             return shell.run([RCLONE, *args], timeout=self.timeout).stdout
         except shell.ShellError as exc:
             self._raise(exc)
-            raise AssertionError("unreachable")
 
     def _try_run(self, args: Sequence[str]) -> str | None:
         try:
@@ -79,7 +79,6 @@ class RcloneBackend:
             if exc.returncode in _NOT_FOUND:
                 return None
             self._raise(exc)
-            raise AssertionError("unreachable")
 
     # Sequence, not list: the method named `list` below shadows the builtin
     # inside the class body, so `list[...]` would not resolve as a type here.

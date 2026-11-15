@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS software (
 CREATE INDEX IF NOT EXISTS software_updated
 ON software(updated_at);
 
+CREATE INDEX IF NOT EXISTS software_created
+ON software(created_at);
+
 CREATE TRIGGER IF NOT EXISTS software_touch_updated
 AFTER UPDATE ON software
 WHEN old.updated_at IS new.updated_at

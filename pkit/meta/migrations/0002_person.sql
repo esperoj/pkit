@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS persons (
 CREATE INDEX IF NOT EXISTS persons_updated
 ON persons(updated_at);
 
+CREATE INDEX IF NOT EXISTS persons_created
+ON persons(created_at);
+
 CREATE TRIGGER IF NOT EXISTS persons_touch_updated
 AFTER UPDATE ON persons
 WHEN old.updated_at IS new.updated_at

@@ -515,3 +515,19 @@ def test_download_cleans_up_when_the_stream_dies(http_server, tmp_path):
         http.download(f"{http_server.url}/truncated", tmp_path / "partial.bin")
 
     assert not (tmp_path / "partial.bin").exists()
+
+
+def test_download_cleans_up_on_unexpected_errors(http_server, monkeypatch, tmp_path):
+    """Failures beyond HTTP (KeyboardInterrupt, bugs) still leave no partial file."""
+
+    def broken(self, chunk_size):
+        yield b"bytes"
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(requests.Response, "iter_content", broken)
+    http_server.route("GET", "/thing", text="bytes")
+
+    with HttpClient() as http, pytest.raises(RuntimeError, match="boom"):
+        http.download(f"{http_server.url}/thing", tmp_path / "partial.bin")
+
+    assert not (tmp_path / "partial.bin").exists()

@@ -209,9 +209,9 @@ class HttpClient:
         response = self.request("GET", url, stream=True)
         try:
             with path.open("wb") as handle:
+                # Empty chunks are a no-op write; no guard needed.
                 for chunk in response.iter_content(CHUNK_SIZE):
-                    if chunk:
-                        handle.write(chunk)
+                    handle.write(chunk)
         except requests.RequestException as exc:
             path.unlink(missing_ok=True)
             raise HttpError(str(exc)) from exc

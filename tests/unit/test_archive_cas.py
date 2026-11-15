@@ -145,6 +145,30 @@ def test_ingest_of_the_object_itself(tmp_path):
     assert ingest(obj, cas, Hashes(sha256=SHA256)) == obj
 
 
+def test_ingest_cross_device_falls_back_to_copy(tmp_path, monkeypatch):
+    """A cross-device os.replace stages inside the CAS and still lands the object."""
+    cas = tmp_path / "cas"
+    source = tmp_path / "source"
+    source.write_bytes(PAYLOAD)
+    real_replace = os.replace
+    failing = {source}
+
+    def cross_device(src, dst):
+        if src in failing:
+            failing.clear()
+            raise OSError("Invalid cross-device link")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", cross_device)
+
+    obj = ingest(source, cas, Hashes(sha256=SHA256))
+
+    assert obj.read_bytes() == PAYLOAD
+    assert obj.stat().st_mode & 0o777 == 0o444
+    assert not source.exists()
+    assert not list(cas.rglob(f".{SHA256}.*"))  # no staging leftovers
+
+
 def test_walk_files_skips_git_and_sorts(tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config").write_text("git")
@@ -166,6 +190,13 @@ def test_walk_files_yields_symlinks_without_following(tmp_path):
 
     assert [item.name for item in walk_files(tree)] == ["link"]
     assert not (tree / "link").is_dir()
+
+
+def test_walk_files_skips_special_files(tmp_path):
+    os.mkfifo(tmp_path / "pipe")
+    (tmp_path / "plain").write_bytes(b"x")
+
+    assert [item.name for item in walk_files(tmp_path)] == ["plain"]
 
 
 def test_walk_files_single_file_or_link_root(tmp_path):

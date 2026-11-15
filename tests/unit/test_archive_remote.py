@@ -11,7 +11,9 @@ import pytest
 from pkit import archive
 from pkit.archive.cas import cas_path
 from pkit.archive.errors import ArchiveError, InputError, TransientError
+from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import RemoteFile
+from pkit.archive.wayback import WaybackBackend
 from pkit.meta.db import MetaDB
 from pkit.meta.models import File
 
@@ -43,6 +45,15 @@ def test_selects_never_matches_unparsable_wayback_location():
     from pkit.archive.remote import selects
 
     assert not selects("wayback:junk", "wayback:https://host", wayback_url="https://host")
+
+
+def test_backend_dispatches_wayback_locations():
+    """wayback: locations build a WaybackBackend; anything else an RcloneBackend."""
+    with archive._backend("wayback:manga", "https://host") as backend:
+        assert isinstance(backend, WaybackBackend)
+
+    with archive._backend("ia:x", "") as backend:
+        assert isinstance(backend, RcloneBackend)
 
 
 class TestMatch:

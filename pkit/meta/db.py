@@ -34,18 +34,21 @@ __all__ = ["MetaDB"]
 CONNECT_TIMEOUT = 30.0
 BUSY_TIMEOUT_MS = 30000
 
-_SORTS: dict[str, str] = {
-    "id": "id ASC",
-    "-id": "id DESC",
-    "created": "created_at ASC, id ASC",
-    "-created": "created_at DESC, id DESC",
-    "updated": "updated_at ASC, id ASC",
-    "-updated": "updated_at DESC, id DESC",
-}
-
 
 def _q(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def _sort_names(cls: type[Record]) -> tuple[str, ...]:
+    """Every sort name one model accepts: id, slug, timestamps, scalar fields."""
+    return ("id", "slug", "created", "updated", *cls.scalar_fields)
+
+
+def _sort_column(cls: type[Record], name: str) -> str | None:
+    """The ORDER BY column for one sort name, or None when the model lacks it."""
+    if name not in _sort_names(cls):
+        return None
+    return f"{name}_at" if name in ("created", "updated") else name
 
 
 def _resolve_type(record_type: str | type[Record] | None) -> type[Record] | None:
@@ -480,33 +483,46 @@ class MetaDB:
         ANDs field filters: scalar fields compare by equality (a collection
         becomes IN), array fields (identifiers, genres, ...) match by
         membership, and link fields (author_ids) match through the link
-        table; an empty collection matches nothing. With record_type None,
-        only stored models carrying every where key are searched. sort picks
-        the order: "id", "-id", "created", "-created", "updated" or
-        "-updated" (default); timestamp sorts tie-break on id. Unknown
-        types, sorts and where fields raise ValueError listing known values.
+        table; an empty collection matches nothing. sort names any sortable
+        column — "id", "slug", "created", "updated" or any scalar field —
+        optionally prefixed with "-" for descending order (default
+        "-updated"); every sort but id tie-breaks on id. With record_type
+        None, only stored models carrying every where key and the sort
+        column are searched. Unknown types, sorts and where fields raise
+        ValueError listing known values.
         """
-        if sort not in _SORTS:
-            known = ", ".join(_SORTS)
-            raise ValueError(f"unknown sort {sort!r}; known sorts: {known}")
         cls = _resolve_type(record_type)
-        models = (cls,) if cls is not None else stored_models()
-        models = tuple(model for model in models if model.table)
+        descending, name = sort.startswith("-"), sort.removeprefix("-")
+        if cls is not None:
+            if _sort_column(cls, name) is None:
+                raise ValueError(
+                    f"unknown sort {sort!r}; known sorts: {', '.join(_sort_names(cls))}"
+                )
+            models = (cls,) if cls.table else ()
+        else:
+            models = tuple(
+                model for model in stored_models() if _sort_column(model, name) is not None
+            )
+            if not models:
+                raise ValueError(f"no stored record type has a sortable field {name!r}")
         if not models:
             return []
+        column = f"{name}_at" if name in ("created", "updated") else name
+        order_columns = ("id",) if name == "id" else (column, "id")
+        direction = "DESC" if descending else "ASC"
         filters: dict[str, list[Any]] = {}
         if where:
-            for name in where:
+            for key in where:
                 if cls is not None:
-                    if _field_kind(cls, name) is None:
-                        raise ValueError(f"not a queryable field on {type_name(cls)}: {name!r}")
-                elif not any(_field_kind(model, name) is not None for model in models):
-                    raise ValueError(f"no stored record type has a queryable field {name!r}")
-            for name, value in where.items():
+                    if _field_kind(cls, key) is None:
+                        raise ValueError(f"not a queryable field on {type_name(cls)}: {key!r}")
+                elif not any(_field_kind(model, key) is not None for model in models):
+                    raise ValueError(f"no stored record type has a queryable field {key!r}")
+            for key, value in where.items():
                 items = _flatten(value)
                 if not items:
                     return []
-                filters[name] = items
+                filters[key] = items
             if cls is None:
                 models = tuple(
                     model
@@ -519,15 +535,17 @@ class MetaDB:
         params: list[Any] = []
         for model in models:
             table = _q(model.table)
-            clauses = [_condition(model, name, items) for name, items in filters.items()]
+            clauses = [_condition(model, key, items) for key, items in filters.items()]
             where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
             payload = _payload_sql(model)
             selects.append(
-                f"SELECT {payload} AS payload, id, created_at, updated_at FROM {table}{where_sql}"
+                f"SELECT {payload} AS payload, "
+                f"{', '.join(_q(c) for c in order_columns)} FROM {table}{where_sql}"
             )
             params.extend(item for items in filters.values() for item in items)
         union = " UNION ALL ".join(selects)
-        sql = f"SELECT payload FROM ({union}) ORDER BY {_SORTS[sort]}"
+        order_sql = ", ".join(f"{_q(c)} {direction}" for c in order_columns)
+        sql = f"SELECT payload FROM ({union}) ORDER BY {order_sql}"
         if limit is not None or offset:
             sql += " LIMIT ? OFFSET ?"
             params.extend([limit if limit is not None else -1, offset])
