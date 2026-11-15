@@ -1,4 +1,6 @@
 import json
+import re
+import sqlite3
 
 import pytest
 
@@ -22,7 +24,7 @@ def test_help_lists_commands(capsys):
 
     assert exc.value.code == EXIT_OK
     out = capsys.readouterr().out
-    assert "dump" in out and "load" in out and "validate" in out
+    assert "dump" in out and "load" in out and "migrate" in out and "validate" in out
 
 
 def test_version(capsys):
@@ -169,3 +171,59 @@ def test_unexpected_error_is_one(run_cli, db_path, monkeypatch):
 
     assert code == EXIT_ERROR
     assert "Error: boom" in err
+
+
+def test_migrate_prints_applied_names(run_cli, db_path):
+    code, out, err = run_cli(main, ["migrate"])
+
+    assert code == EXIT_OK, err
+    assert out.splitlines() == [
+        "0001_file.sql",
+        "0002_person.sql",
+        "0003_text.sql",
+        "0004_software.sql",
+        "0005_created_indexes.sql",
+    ]
+
+
+def test_migrate_is_silent_when_current(run_cli, db_path):
+    with MetaDB(db_path):
+        pass
+
+    code, out, err = run_cli(main, ["migrate"])
+
+    assert code == EXIT_OK, err
+    assert out == ""
+
+
+def test_validate_and_dump_use_readonly_connections(run_cli, db_path, monkeypatch):
+    """Read-only commands must not write even on connect (parallel sweeps)."""
+    with MetaDB(db_path) as meta:
+        meta.put(File(id=ID, size=3))
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    code, _out, err = run_cli(main, ["validate"])
+    assert code == EXIT_OK, err
+
+    repo = db_path.parent / "repo"
+    code, _out, err = run_cli(main, ["dump", str(repo)])
+    assert code == EXIT_OK, err
+
+    writes = [
+        statement
+        for statement in statements
+        if re.match(
+            r"\s*(BEGIN|COMMIT|ROLLBACK|CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)\b",
+            statement,
+            re.IGNORECASE,
+        )
+    ]
+    assert writes == []

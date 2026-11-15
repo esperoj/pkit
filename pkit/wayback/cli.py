@@ -26,6 +26,7 @@ from pkit.lib.cli import (
 )
 from pkit.version import get_version
 from pkit.wayback.client import (
+    DEFAULT_HOST,
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
@@ -121,7 +122,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--proxy",
         dest="proxy_prefix",
         default=None,
-        help="Proxy prefix placed before Wayback Machine URLs.",
+        help="Proxy prefix placed before canonical Wayback URLs (disables the mirror host).",
+    )
+    parser.add_argument(
+        "--host",
+        dest="host",
+        default=None,
+        help=(
+            "Wayback mirror host for web.archive.org URLs "
+            f"(env PKIT_WAYBACK_HOST, [wayback] host; default {DEFAULT_HOST}; "
+            "'web.archive.org' or '' disables the rewrite)."
+        ),
     )
     parser.add_argument(
         "--lock-file",
@@ -174,6 +185,7 @@ def _save(args: argparse.Namespace) -> int:
         api_key=args.api_key,
         api_secret=args.api_secret,
         proxy_prefix=args.proxy_prefix,
+        host=args.host,
         lock_file=args.lock_file,
         timeout=args.timeout,
     ) as client:

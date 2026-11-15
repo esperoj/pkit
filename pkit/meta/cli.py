@@ -1,7 +1,8 @@
-"""meta CLI: dump, load, and check the record database.
+"""meta CLI: dump, load, migrate, and check the record database.
 
 pkit meta dump [REPO]                                # database -> <repo>/<table>.json
 pkit meta load [--refresh] [--lang LANG] [SOURCE]    # JSON repo or source URL -> database
+pkit meta migrate                                    # apply pending schema migrations
 pkit meta validate                                   # orphan link rows, duplicate ids/identifiers
 """
 
@@ -59,6 +60,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "validate", help="Report orphan link rows and duplicate ids/identifiers."
     )
     validate_cmd.set_defaults(func=_validate)
+
+    migrate_cmd = sub.add_parser(
+        "migrate", help="Apply pending schema migrations; prints each applied name."
+    )
+    migrate_cmd.set_defaults(func=_migrate)
     return parser
 
 
@@ -88,11 +94,20 @@ def _load(args: argparse.Namespace) -> int:
 
 
 def _validate(_: argparse.Namespace) -> int:
-    with MetaDB() as db:
+    with MetaDB(readonly=True) as db:
         issues = db.validate()
     for issue in issues:
         print(issue)
     return EXIT_OK if not issues else EXIT_ERROR
+
+
+def _migrate(_: argparse.Namespace) -> int:
+    # auto_migrate=False: the CLI reports exactly what migrate() itself applies.
+    with MetaDB(auto_migrate=False) as db:
+        applied = db.migrate()
+    for name in applied:
+        print(name)
+    return EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None) -> int:

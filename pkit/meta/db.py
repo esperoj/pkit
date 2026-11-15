@@ -10,6 +10,11 @@ a raw connection through its code. It is a context manager:
 Input rule: lenient at the edge (Record or mapping in, str | Path | None for
 paths), strict inside, one output type. Here `str` always means a record id —
 never a JSON payload.
+
+Migrations are checked read-only on connect and applied only when pending,
+so an up-to-date database takes no write lock (gnu parallel can hammer
+`pkit archive verify`). readonly=True opens the file read-only and never
+migrates; migrate() is public for `pkit meta migrate`.
 """
 
 import json
@@ -18,12 +23,25 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
+from urllib.parse import quote
 
 from pkit.meta import config as meta_config
 from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models, type_name
 from pkit.meta.serialize import from_dict, from_json
 
 __all__ = ["MetaDB"]
+
+CONNECT_TIMEOUT = 30.0
+BUSY_TIMEOUT_MS = 30000
+
+_SORTS: dict[str, str] = {
+    "id": "id ASC",
+    "-id": "id DESC",
+    "created": "created_at ASC, id ASC",
+    "-created": "created_at DESC, id DESC",
+    "updated": "updated_at ASC, id ASC",
+    "-updated": "updated_at DESC, id DESC",
+}
 
 
 def _q(name: str) -> str:
@@ -68,34 +86,6 @@ def _values(record: Record, cls: type[Record]) -> list[Any]:
     return values
 
 
-def _migrate(conn: sqlite3.Connection, directory: str | Path) -> None:
-    """Apply each .sql once, atomically with its _migrations row.
-
-    Files must not contain BEGIN/COMMIT and must end statements with ';'.
-    """
-    directory = Path(directory).expanduser()
-    if not directory.is_dir():
-        return
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS _migrations ("
-        "name TEXT PRIMARY KEY CHECK (name <> ''), "
-        "applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))"
-    )
-    conn.commit()
-    applied = {row[0] for row in conn.execute("SELECT name FROM _migrations")}
-    for file_path in sorted(directory.glob("*.sql")):
-        if file_path.name in applied:
-            continue
-        # Schema change and bookkeeping row commit together: no crash window
-        # where a migration is applied but unrecorded.
-        name = file_path.name.replace("'", "''")
-        conn.executescript(
-            "BEGIN;\n"
-            + file_path.read_text(encoding="utf-8")
-            + f"\nINSERT INTO _migrations(name) VALUES ('{name}');\nCOMMIT;"
-        )
-
-
 class MetaDB:
     """The record database: sqlite tables behind typed record methods.
 
@@ -103,6 +93,11 @@ class MetaDB:
     close. `commit()` stays public for callers that need intermediate
     durability inside one long session (archive.add commits per file).
     Foreign keys are OFF so import order is free.
+
+    readonly=True opens an existing database read-only (mode=ro, no DDL, no
+    migrations). A missing or empty file still creates the schema once, so
+    dump/validate behave sensibly on a fresh machine. auto_migrate=False
+    skips the automatic check for callers that run migrate() themselves.
     """
 
     def __init__(
@@ -110,14 +105,90 @@ class MetaDB:
         path: str | Path | None = None,
         *,
         migrations_dir: str | Path | None = None,
+        readonly: bool = False,
+        auto_migrate: bool = True,
     ) -> None:
         cfg = meta_config.load()
         target = Path(path if path is not None else cfg.db_path).expanduser()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(target))
+        self._migrations_dir = Path(
+            migrations_dir if migrations_dir is not None else cfg.migrations_dir
+        ).expanduser()
+        self.readonly = readonly and target.is_file() and target.stat().st_size > 0
+        if self.readonly:
+            self.conn = sqlite3.connect(
+                f"file:{quote(str(target))}?mode=ro", uri=True, timeout=CONNECT_TIMEOUT
+            )
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(str(target), timeout=CONNECT_TIMEOUT)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = OFF")
-        _migrate(self.conn, migrations_dir if migrations_dir is not None else cfg.migrations_dir)
+        self.conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        if not self.readonly and auto_migrate and self._pending_migrations(self._migrations_dir):
+            self.migrate(self._migrations_dir)
+
+    def _pending_migrations(self, directory: Path) -> list[Path]:
+        """Unapplied .sql files, checked without taking any write lock."""
+        if not directory.is_dir():
+            return []
+        files = sorted(directory.glob("*.sql"))
+        if not files:
+            return []
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_migrations'"
+        ).fetchone()
+        if row is None:
+            return files
+        applied = {row[0] for row in self.conn.execute("SELECT name FROM _migrations")}
+        return [file for file in files if file.name not in applied]
+
+    def migrate(self, migrations_dir: str | Path | None = None) -> list[str]:
+        """Apply pending migrations, returning the names applied ([] when current).
+
+        WAL journaling is enabled best-effort (read-only or locked databases
+        keep their current mode). Each file runs inside BEGIN IMMEDIATE with
+        its _migrations bookkeeping; the primary key re-checks the applied
+        set inside the transaction, so concurrent migrators are safe — the
+        loser's re-run rolls back whole on the duplicate insert.
+        Migration files must not contain BEGIN/COMMIT and must end statements
+        with ';'.
+        """
+        directory = Path(
+            migrations_dir if migrations_dir is not None else self._migrations_dir
+        ).expanduser()
+        if not directory.is_dir():
+            return []
+        try:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError:
+            pass
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS _migrations ("
+            "name TEXT PRIMARY KEY CHECK (name <> ''), "
+            "applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))"
+        )
+        applied = {row[0] for row in self.conn.execute("SELECT name FROM _migrations")}
+        newly: list[str] = []
+        for file_path in sorted(directory.glob("*.sql")):
+            if file_path.name in applied:
+                continue
+            # Schema change and bookkeeping row commit together: no crash
+            # window where a migration is applied but unrecorded.
+            name = file_path.name.replace("'", "''")
+            try:
+                self.conn.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + file_path.read_text(encoding="utf-8")
+                    + f"\nINSERT INTO _migrations(name) VALUES ('{name}');\nCOMMIT;"
+                )
+            except sqlite3.IntegrityError:
+                # A concurrent migrator recorded it while we waited on the
+                # write lock; our whole re-run rolled back with the insert.
+                self.conn.rollback()
+                continue
+            applied.add(file_path.name)
+            newly.append(file_path.name)
+        return newly
 
     def close(self) -> None:
         """Close the connection."""
@@ -201,13 +272,19 @@ class MetaDB:
         identifier: str | Iterable[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
+        sort: str = "-updated",
     ) -> list[Record]:
-        """All records of a type (or all types), newest first.
+        """All records of a type (or all types), newest first by default.
 
         record_type accepts a type name ("note") or the class (Note).
         identifier filters to records matching a token (or any token in an
-        iterable). Unknown types raise ValueError listing the known types.
+        iterable). sort picks the order: "id", "-id", "created", "-created",
+        "updated" or "-updated" (default); timestamp sorts tie-break on id.
+        Unknown types and sorts raise ValueError listing the known values.
         """
+        if sort not in _SORTS:
+            known = ", ".join(_SORTS)
+            raise ValueError(f"unknown sort {sort!r}; known sorts: {known}")
         if isinstance(record_type, type):
             if not issubclass(record_type, Record):
                 raise TypeError(f"not a Record class: {record_type!r}")
@@ -236,9 +313,11 @@ class MetaDB:
                 else ""
             )
             payload = _payload_sql(cls)
-            selects.append(f"SELECT {payload} AS payload, updated_at FROM {table}{where}")
+            selects.append(
+                f"SELECT {payload} AS payload, id, created_at, updated_at FROM {table}{where}"
+            )
         union = " UNION ALL ".join(selects)
-        sql = f"SELECT payload FROM ({union}) ORDER BY updated_at DESC"
+        sql = f"SELECT payload FROM ({union}) ORDER BY {_SORTS[sort]}"
         params: list[Any] = list(per_select) * len(models)
         if limit is not None or offset:
             sql += " LIMIT ? OFFSET ?"

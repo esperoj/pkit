@@ -100,15 +100,37 @@ identifier. Only ~200~ captures are used, and only the oldest capture per
 #+begin_src toml
 [archive]
 wayback_url = "https://files.example.com"
+
+[wayback]
+host = "archive.esperoj.eu.org"   # mirror rewriting web.archive.org requests
+
+[http]
+proxy_prefix = ""                 # or route all rewritten hosts through a proxy
+
+[http.hosts]
+"web.archive.org" = "archive.esperoj.eu.org"
 #+end_src
 
-~PKIT_ARCHIVE_WAYBACK_URL~ overrides it. Staging uses the rclone remote
-~pkit-archive:~. Staging is *temporary and never registered as a location* —
+~PKIT_ARCHIVE_WAYBACK_URL~, ~PKIT_WAYBACK_HOST~ and ~PKIT_HTTP_PROXY_PREFIX~
+override them. Stored ~wayback:~ locations are always canonical
+~https://web.archive.org/...~ URLs; the mirror host or proxy only rewrites
+requests at the transport layer (see [[file:wayback.org][docs/wayback.org]]).
+
+Staging uses the rclone remote ~pkit-archive:~. Staging is *temporary and never registered as a location* —
 only the Wayback capture is.
 
 Wayback captures are registered unverified because CDX indexing lags. Run
-~verify~ later (a sharded monthly sweep works well). ~drop~ always verifies one
-location live, so an unverified registration can never authorize a deletion.
+~verify~ later — a sharded daily sweep works well:
+
+#+begin_src sh
+scripts/archive-verify-sweep --shard "$(date +%-d)" --delay 5   # one daily shard, rate-limited
+scripts/archive-pack -r age1... -s 100M big-dir/                 # deterministic, encrypted, chunked
+#+end_src
+
+See [[file:../scripts/README.org][scripts/README.org]]. ~drop~ always verifies one location live, so an
+unverified registration can never authorize a deletion. ~verify~ opens the
+database read-only, so parallel sweeps never contend for the SQLite write
+lock.
 
 * Git workflow
 

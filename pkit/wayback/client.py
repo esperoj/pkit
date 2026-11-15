@@ -3,7 +3,9 @@
 This module is library-only. It should not know stdout/stderr or exit codes.
 Success returns structured dataclasses; failure raises typed exceptions.
 All HTTP goes through pkit.lib.http so the whole toolkit shares one
-session, timeout and error type.
+session, timeout and error type. URL rewriting (mirror host or proxy
+prefix) is delegated to the HttpClient; every URL this client builds is
+canonical https://web.archive.org/..., and so are the results it returns.
 """
 
 import fcntl
@@ -15,9 +17,11 @@ from pathlib import Path
 from typing import Any, Self
 from urllib.parse import urlencode
 
+from pkit import config
 from pkit.lib.http import HttpClient, HttpError
 
 BASE_URL = "https://web.archive.org"
+DEFAULT_HOST = "archive.esperoj.eu.org"
 DEFAULT_LOCK_FILE = "/tmp/spn2_submit.lock"
 ENV_ACCESS_KEY = "INTERNET_ARCHIVE_ACCESS_KEY"
 ENV_SECRET_KEY = "INTERNET_ARCHIVE_SECRET_KEY"
@@ -103,6 +107,23 @@ def _wayback_error(exc: HttpError) -> WaybackError:
     return WaybackError(message)
 
 
+def host_map_for(host: str) -> dict[str, str]:
+    """The Wayback host rewrite for one configured mirror host.
+
+    An empty map — host "web.archive.org" or "" — means no rewrite:
+    requests and downloads go to the canonical host as written.
+    """
+    if not host or host.lower() == "web.archive.org":
+        return {}
+    return {"web.archive.org": host}
+
+
+def _wayback_host() -> str:
+    """[wayback] host / PKIT_WAYBACK_HOST, defaulting to the mirror."""
+    data = config.load()
+    return str(config.resolve(data, "wayback", {"host": DEFAULT_HOST})["host"])
+
+
 class WaybackClient:
     """Client for Wayback Machine APIs.
 
@@ -117,6 +138,7 @@ class WaybackClient:
         api_key: str | None = None,
         api_secret: str | None = None,
         proxy_prefix: str | None = None,
+        host: str | None = None,
         lock_file: str | None = DEFAULT_LOCK_FILE,
         timeout: float | None = 120.0,
         http: HttpClient | None = None,
@@ -124,6 +146,7 @@ class WaybackClient:
         self.api_key = os.getenv(ENV_ACCESS_KEY) if api_key is None else api_key
         self.api_secret = os.getenv(ENV_SECRET_KEY) if api_secret is None else api_secret
         self.proxy_prefix = proxy_prefix or ""
+        self.host = _wayback_host() if host is None else host
         self.lock_file = DEFAULT_LOCK_FILE if lock_file is None else lock_file
         self.timeout = timeout
         self._owns_http = http is None
@@ -131,8 +154,21 @@ class WaybackClient:
             headers = {"Accept": "application/json"}
             if self.api_key and self.api_secret:
                 headers["Authorization"] = f"LOW {self.api_key}:{self.api_secret}"
-            http = HttpClient(timeout=timeout, headers=headers)
+            if self.proxy_prefix:
+                # An explicit proxy routes canonical URLs; no mirror rewrite on top.
+                http = HttpClient(
+                    timeout=timeout, headers=headers, proxy_prefix=proxy_prefix, host_map={}
+                )
+            else:
+                http = HttpClient(timeout=timeout, headers=headers, host_map=self.host_map)
         self._http = http
+
+    @property
+    def host_map(self) -> dict[str, str]:
+        """The host rewrite this client's transport applies to canonical URLs."""
+        if self.proxy_prefix:
+            return {}
+        return host_map_for(self.host)
 
     def close(self) -> None:
         """Close the underlying HTTP session if owned by this client."""
@@ -146,8 +182,8 @@ class WaybackClient:
         self.close()
 
     def _endpoint(self, path: str) -> str:
-        """Build a full endpoint URL, applying the optional proxy prefix."""
-        return f"{self.proxy_prefix}{BASE_URL}{path}"
+        """Canonical endpoint URL; the HttpClient applies any rewriting."""
+        return f"{BASE_URL}{path}"
 
     def _request(
         self,

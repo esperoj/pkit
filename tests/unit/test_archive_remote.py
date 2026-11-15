@@ -3,6 +3,7 @@
 Everything except the remote itself is real: sqlite records, the CAS, hashing.
 """
 
+import sqlite3
 from dataclasses import replace
 
 import pytest
@@ -269,3 +270,26 @@ class TestRemoveLocation:
 
         assert record.locations == []
         assert _stored(db_path, added.record_id).locations == []
+
+
+class TestVerifyConcurrency:
+    def test_verify_reads_while_write_transaction_open(self, repo, db_path, added, install_backend):
+        """Sweeps run verify under `parallel`; connect must not take a write lock."""
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        _record_locations(db_path, added.record_id, [LOCATION])
+
+        writer = sqlite3.connect(str(db_path))
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO persons(id, slug, name) VALUES ('p9', 'p9', 'Busy')")
+
+        try:
+            result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+        finally:
+            writer.rollback()
+            writer.close()
+
+        assert result.ok
+        assert [(check.location, check.status) for check in result.checks] == [
+            ("local", "ok"),
+            (LOCATION, "ok"),
+        ]

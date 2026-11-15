@@ -9,7 +9,7 @@ pkit wayback save https://example.com
 * Usage
 
 #+begin_src text
-pkit wayback [--key K] [--secret S] [--proxy P] [--lock-file F] [--timeout T] save [URL] [options]
+pkit wayback [--key K] [--secret S] [--proxy P] [--host H] [--lock-file F] [--timeout T] save [URL] [options]
 #+end_src
 
 Tool options come before ~save~; save options after it.
@@ -18,7 +18,8 @@ Tool options come before ~save~; save options after it.
 |----------------------+---------------------------------+-------------------------------------------|
 | ~--key~, ~--api-key~ | ~$INTERNET_ARCHIVE_ACCESS_KEY~  | Access key                                |
 | ~--secret~, ~--api-secret~ | ~$INTERNET_ARCHIVE_SECRET_KEY~ | Secret key                             |
-| ~--proxy~            | none                            | Prefix placed before Wayback URLs         |
+| ~--proxy~            | none                            | Prefix placed before canonical Wayback URLs; disables the mirror host |
+| ~--host~             | ~[wayback] host~                | Mirror host rewriting ~web.archive.org~; ~web.archive.org~ or ~''~ disables |
 | ~--lock-file~        | ~/tmp/spn2_submit.lock~         | Serializes SPN2 submissions; ~''~ disables |
 | ~--timeout~          | 120                             | HTTP timeout in seconds                   |
 
@@ -57,3 +58,41 @@ Plain mode prints the archive URL to stdout. ~--json~ prints:
 
 Errors go to stderr; exit codes follow the shared contract (2 for usage or
 auth problems, 75 when rate-limited or timed out, 1 otherwise).
+
+* Mirror host and proxy
+
+Every URL the client builds and every result it returns is canonical
+~https://web.archive.org/...~: saved ~archive_url~ values, ~wayback:~
+locations in the meta database, ~split_wayback~ and ~selects~ all stay
+portable across machines. Requests are rewritten only at the transport
+layer, inside ~pkit.lib.http.HttpClient~ (~resolve_url~):
+
+- By default (no ~--proxy~), requests to ~web.archive.org~ are rewritten to
+  the mirror host, ~archive.esperoj.eu.org~ by default. Configure it with
+  ~--host~ / ~$PKIT_WAYBACK_HOST~ / ~[wayback] host~; ~--host web.archive.org~
+  or ~--host ''~ disables the rewrite.
+- ~--proxy P~ routes canonical URLs through ~P~ instead (a ~/~ is inserted
+  between a prefix not ending in ~/~, ~?~ or ~=~). It disables the mirror
+  host rewrite — never both.
+- Redirects are followed manually while rewriting: 301/302/303 become GET,
+  307/308 keep method and body, and ~Authorization~ is dropped when a
+  redirect leaves the trusted hosts (the mirror, the proxy host).
+
+The same rewriting serves every ~HttpClient~ user (~WaybackBackend.fetch~
+downloads, Wikidata imports) through the shared ~[http]~ config:
+
+#+begin_src toml
+[http]
+proxy_prefix = "https://proxy.example.com"   # PKIT_HTTP_PROXY_PREFIX
+
+[http.hosts]
+"web.archive.org" = "my-mirror.example.com"  # source host -> target host
+
+[wayback]
+host = "archive.esperoj.eu.org"              # PKIT_WAYBACK_HOST
+#+end_src
+
+An explicitly passed ~proxy_prefix~/~host_map~ overrides the ~[http]~
+config, and an empty one (~""~/~{}~) disables it; the Wayback mirror host
+(configured via ~[wayback]~) takes precedence over a ~[http.hosts]~ entry
+for ~web.archive.org~.

@@ -25,16 +25,18 @@ def dump(
     """Write every record table to <repo>/<table>.json as a JSON array.
 
     Returns the number of records written. Empty tables are written as [].
+    The database is opened read-only; a missing file is created once with
+    an empty schema.
     """
     cfg = config.load()
     repo = as_path(repo_path or cfg.repo_path)
     target_db = db_path or cfg.db_path
     count = 0
     repo.mkdir(parents=True, exist_ok=True)
-    with MetaDB(target_db) as db:
+    with MetaDB(target_db, readonly=True) as db:
         for cls in stored_models():
-            rows = [asdict(record) for record in db.find(cls)]
-            rows.sort(key=lambda row: row["id"])
+            # SQLite-side id order keeps dumps byte-identical across machines.
+            rows = [asdict(record) for record in db.find(cls, sort="id")]
             file = repo / f"{cls.table}.json"
             tmp = file.with_name(file.name + ".tmp")
             tmp.write_text(

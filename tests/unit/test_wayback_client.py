@@ -3,6 +3,7 @@ import pytest
 from pkit.lib.http import HttpError
 from pkit.wayback.client import (
     BASE_URL,
+    DEFAULT_HOST,
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
@@ -16,6 +17,7 @@ from pkit.wayback.client import (
     SaveResult,
     WaybackClient,
     WaybackError,
+    host_map_for,
 )
 
 
@@ -64,10 +66,61 @@ def test_lock_file_none_uses_default(fake_http):
     client.close()
 
 
-def test_endpoint_applies_proxy(fake_http):
+def test_endpoint_is_canonical(fake_http):
+    """The client builds canonical URLs; rewriting belongs to HttpClient."""
     client = WaybackClient(proxy_prefix="http://proxy/", lock_file="", http=fake_http)
-    assert client._endpoint("/save") == "http://proxy/https://web.archive.org/save"
+    assert client._endpoint("/save") == f"{BASE_URL}/save"
     client.close()
+
+
+def test_owned_http_defaults_to_mirror_host_map():
+    with WaybackClient(lock_file="") as client:
+        assert client.host == DEFAULT_HOST
+        assert client.host_map == {"web.archive.org": DEFAULT_HOST}
+        assert client._http.host_map == {"web.archive.org": DEFAULT_HOST}
+        assert client._http.proxy_prefix == ""
+
+
+def test_owned_http_proxy_disables_host_map():
+    with WaybackClient(lock_file="", proxy_prefix="https://proxy.example.com/") as client:
+        assert client.host_map == {}
+        assert client._http.host_map == {}
+        assert client._http.proxy_prefix == "https://proxy.example.com/"
+
+
+def test_host_param_overrides_mirror():
+    with WaybackClient(lock_file="", host="mirror.example") as client:
+        assert client.host == "mirror.example"
+        assert client._http.host_map == {"web.archive.org": "mirror.example"}
+
+
+@pytest.mark.parametrize("disabled", ["web.archive.org", "", "WEB.ARCHIVE.ORG"])
+def test_host_param_can_disable_rewrite(disabled):
+    with WaybackClient(lock_file="", host=disabled) as client:
+        assert client.host_map == {}
+        assert client._http.host_map == {}
+
+
+def test_host_from_env(monkeypatch):
+    monkeypatch.setenv("PKIT_WAYBACK_HOST", "env-mirror.example")
+    with WaybackClient(lock_file="") as client:
+        assert client.host == "env-mirror.example"
+        assert client._http.host_map == {"web.archive.org": "env-mirror.example"}
+
+
+def test_host_from_toml(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[wayback]\nhost = "toml-mirror.example"\n', encoding="utf-8")
+    monkeypatch.setenv("PKIT_CONFIG", str(config_file))
+
+    with WaybackClient(lock_file="") as client:
+        assert client.host == "toml-mirror.example"
+
+
+def test_host_map_for_maps_and_disables():
+    assert host_map_for("mirror.example") == {"web.archive.org": "mirror.example"}
+    assert host_map_for("") == {}
+    assert host_map_for("web.archive.org") == {}
 
 
 def test_close_closes_owned_http(monkeypatch):

@@ -8,6 +8,7 @@ sync between machines, and integrity checks.
 #+begin_src sh
 pkit meta dump [REPO]                                # database -> <repo>/<table>.json; prints the record count
 pkit meta load [--refresh] [--lang LANG] [SOURCE]    # JSON repo or source URL -> database; prints the count
+pkit meta migrate                                   # apply pending migrations; prints each applied name
 pkit meta validate                                   # orphan link rows, duplicate ids/identifiers; silent when clean
 #+end_src
 
@@ -16,6 +17,9 @@ pkit meta validate                                   # orphan link rows, duplica
 (such as ~wikidata:Q42~ or ~wikidata:Q82050~), existing records matched by
 identifier are skipped unless ~--refresh~ is passed. ~validate~ prints
 each issue to stdout and exits 1 if any were found (0 when clean).
+~migrate~ prints one newly applied migration name per line and is silent
+when the database is current. ~dump~ and ~validate~ open the database
+read-only.
 
 * Languages
 
@@ -58,10 +62,11 @@ pkit meta dump ~/records       # then commit ~/records to git
 git pull && pkit meta load     # on the other machine
 #+end_src
 
-One file per table, one JSON array per file, rows sorted by id, so
-unchanged data produces byte-identical files (clean git diffs). Link
-tables are not synced separately — links live inside their parent rows
-and are rebuilt on load.
+One file per table, one JSON array per file, rows sorted by id (SQLite-side:
+~db.find(cls, sort="id")~), so unchanged data produces byte-identical files
+(clean git diffs). Link tables are not synced separately — links live inside
+their parent rows and are rebuilt on load. Browse pending repo changes with
+~scripts/meta-diff-fzf~ (see [[file:../scripts/README.org][scripts/README.org]]).
 
 * Library
 
@@ -74,9 +79,16 @@ with MetaDB() as db:
     db.put(Text(id="t1", title="Pandora Hearts", kind="manga", author_ids=["p1"]))
     db.put(Software(id="s1", title="Tales of the Abyss", kind="game", series=["Tales"]))
     record = db.get("t1")
-    records = db.find(Text)  # newest first
+    records = db.find(Text)  # newest first (find(cls, sort="-updated") by default)
+    oldest = db.find(Text, sort="created")  # or id, -id, created, -created, updated
     matches = db.find(identifier="wikidata:Q42")
     issues = db.validate()  # orphans, duplicate ids/identifiers
+
+with MetaDB(readonly=True) as db:  # no DDL, no write lock, no migrations
+    record = db.get("t1")
+
+with MetaDB("records.db", auto_migrate=False) as db:
+    applied = db.migrate()  # same as `pkit meta migrate`; [] when current
 
 dump.dump("~/records")  # records -> JSON repo
 load.load("~/records")  # JSON repo -> records
@@ -96,3 +108,8 @@ re-adding the same bytes is the same row across machines, and
 ~sha256:<hex>~ is also stored in ~File.identifiers~ alongside alternate
 hashes (~sha1:...~, ~md5:...~). ~db_path~ defaults to ~[meta] db_path~ /
 ~$PKIT_META_DB_PATH~.
+
+Connections check migrations read-only first and only take a write lock
+when something is pending, so concurrent readers (a parallel
+~pkit archive verify~ sweep) never block each other; ~migrate()~ enables
+WAL journaling best-effort and is safe to run concurrently.

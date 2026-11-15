@@ -287,3 +287,26 @@ class TestWaybackBackend:
 
         with self.backend(fake_http) as backend, pytest.raises(ArchiveError):
             backend.fetch(f"wayback:{url}", tmp_path / "obj")
+
+
+class TestWaybackBackendRewriting:
+    def test_owned_http_gets_default_wayback_host_map(self):
+        with WaybackBackend("manga", base_url="https://host") as backend:
+            assert backend._client.host_map == {"web.archive.org": "archive.esperoj.eu.org"}
+            assert backend._http.host_map == {"web.archive.org": "archive.esperoj.eu.org"}
+
+    def test_owned_http_follows_injected_client_host(self, fake_http):
+        client = WaybackClient(http=fake_http, lock_file="", host="mirror.example")
+        with WaybackBackend("manga", base_url="https://host", client=client) as backend:
+            assert backend._http.host_map == {"web.archive.org": "mirror.example"}
+        client.close()
+
+    def test_owned_http_follows_client_host_disabled(self, fake_http):
+        client = WaybackClient(http=fake_http, lock_file="", host="web.archive.org")
+        with WaybackBackend("manga", base_url="https://host", client=client) as backend:
+            assert backend._http.host_map == {}
+        client.close()
+
+    def test_owned_http_has_no_authorization_headers(self):
+        with WaybackBackend("manga", base_url="https://host") as backend:
+            assert "Authorization" not in backend._http._session.headers

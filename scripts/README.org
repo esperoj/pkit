@@ -1,0 +1,85 @@
+#+title: pkit workflow scripts
+
+Project-level helpers, kept out of the ~pkit~ Python package on purpose:
+they glue ~git~ and ~pkit~ commands together in the shell and are not part
+of any SDK contract. Make them executable once after cloning:
+
+#+begin_src sh
+chmod +x scripts/meta-diff-fzf scripts/archive-pack scripts/archive-verify-sweep
+#+end_src
+
+* Scripts
+
+| Script                    | Purpose                                                        |
+|---------------------------+----------------------------------------------------------------|
+| ~meta-diff-fzf~           | Browse record repo changes (working tree vs HEAD) in ~fzf~     |
+| ~archive-pack~            | Deterministic ~tar.zst~ packing, optional ~age~ + ~split~      |
+| ~archive-verify-sweep~    | Sharded, parallel ~pkit archive verify~ over CAS-linked files  |
+
+** meta-diff-fzf
+
+#+begin_src sh
+scripts/meta-diff-fzf [REPO]        # REPO defaults to $PKIT_META_REPO or 'records'
+#+end_src
+
+Compares every ~<repo>/<table>.json~ against ~HEAD~ (records are keyed by
+~id~ inside each JSON array), lists added/modified/deleted records as
+~table<TAB>id<TAB>status<TAB>title-or-name~, and opens ~fzf~ with a
+per-record before/after diff as the preview. The selected line is printed
+to stdout. ~REPO~ may be any directory of a git work tree; JSON handling
+uses the Python standard library, so ~jq~ is not required.
+
+Exits 2 when ~git~, ~python3~ or ~fzf~ is missing (or ~REPO~ is not a git
+work tree), and 1 when there are no record changes.
+
+** archive-pack
+
+#+begin_src sh
+scripts/archive-pack [-o FILE] [-r PUB ...] [-R] [-s SIZE] PATH
+#+end_src
+
+Packs ~PATH~ into a reproducible ~tar.zst~ — ~--sort=name~,
+~--mtime='UTC 1970-01-01'~, ~--owner=0 --group=0 --numeric-owner~ — so the
+same bytes always produce the same archive (clean CAS identity). With
+~-r PUB~ (repeatable) or ~-R~ (passphrase) the archive is encrypted with
+~age~ into ~<name>.tar.zst.age~; with ~-s SIZE~ (e.g. ~100M~) the result is
+split into ~FILE.part-aa~, ~FILE.part-ab~, ... chunks. Chunks and whole
+archives are ordinary files, ready for ~pkit archive add~.
+
+** archive-verify-sweep
+
+#+begin_src sh
+scripts/archive-verify-sweep [--jobs N] [--delay SECS] [--shard N/M] [TREE]
+#+end_src
+
+Collects the unique ~sha256~ ids behind a tree's CAS symlinks and runs
+~pkit archive verify sha256:<id>~ on each through GNU ~parallel~ (~--tag~
+output), exiting non-zero when any check is not ~ok~. ~--delay~ spaces out
+job starts for rate-limited remotes such as ~wayback:~. ~--shard N/M~
+verifies only every M-th id (1-based); a bare ~--shard N~ means ~N/31~, so
+a daily sweep is:
+
+#+begin_src sh
+scripts/archive-verify-sweep --shard "$(date +%-d)" --delay 5
+#+end_src
+
+Exits 2 for missing tools or bad arguments, 1 when no CAS-linked files
+exist in the tree or any check fails.
+
+* External tools
+
+| Tool            | Used by                     | Required                |
+|-----------------+-----------------------------+-------------------------|
+| ~git~           | ~meta-diff-fzf~             | always                  |
+| ~python3~       | ~meta-diff-fzf~             | always (stdlib only)    |
+| ~jq~            | —                           | not needed (python3)    |
+| ~fzf~           | ~meta-diff-fzf~             | always                  |
+| ~tar~, ~zstd~   | ~archive-pack~              | always                  |
+| ~age~           | ~archive-pack~              | only with ~-r~ / ~-R~   |
+| ~split~         | ~archive-pack~              | only with ~-s~          |
+| ~find~, ~sed~, ~awk~, ~sort~, ~grep~ | ~archive-verify-sweep~ | always (GNU) |
+| ~parallel~      | ~archive-verify-sweep~      | always                  |
+| ~pkit~          | ~archive-verify-sweep~      | on ~PATH~ (~make install~) |
+
+GNU ~tar~ / ~find~ / ~coreutils~ are assumed (Termux and Linux ship them;
+on macOS install ~coreutils~ / ~gnu-tar~).

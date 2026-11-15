@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# archive-pack — deterministically pack a file or directory for `pkit archive add`.
+#
+# Packs PATH into a reproducible tar.zst (sorted names, epoch mtime, root
+# owner), optionally encrypts it with age, and optionally splits it into
+# fixed-size chunks. Byte-identical inputs produce byte-identical archives,
+# so re-packing never churns the CAS.
+#
+# Usage:
+#   scripts/archive-pack [OPTIONS] PATH
+#
+# Options:
+#   -o, --output FILE      output name (default: <name>.tar.zst[.age] in .)
+#   -r, --recipient PUB    encrypt to this age public key (repeatable)
+#   -R, --encrypt-pass     encrypt with a passphrase (age -R, interactive)
+#   -s, --split SIZE       split the result into chunks of SIZE (e.g. 100M),
+#                          written as FILE.part-aa, FILE.part-ab, ...
+#   -h, --help             show this help
+#
+# Requires: tar (GNU), zstd; age and split only when encryption/splitting is
+# used. Chunks and whole archives are ready for `pkit archive add`.
+set -euo pipefail
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "archive-pack: missing required tool: $1" >&2
+        exit 2
+    }
+}
+
+usage() {
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+output=""
+split_size=""
+recipients=()
+passphrase=0
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o | --output)
+            [ $# -ge 2 ] || { echo "archive-pack: --output needs a value" >&2; exit 2; }
+            output=$2
+            shift 2
+            ;;
+        -r | --recipient)
+            [ $# -ge 2 ] || { echo "archive-pack: --recipient needs a value" >&2; exit 2; }
+            recipients+=("$2")
+            shift 2
+            ;;
+        -R | --encrypt-pass)
+            passphrase=1
+            shift
+            ;;
+        -s | --split)
+            [ $# -ge 2 ] || { echo "archive-pack: --split needs a value" >&2; exit 2; }
+            split_size=$2
+            shift 2
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --*)
+            echo "archive-pack: unknown option: $1" >&2
+            exit 2
+            ;;
+        *)
+            if [ -n "${path:-}" ]; then
+                echo "archive-pack: unexpected argument: $1" >&2
+                exit 2
+            fi
+            path=$1
+            shift
+            ;;
+    esac
+done
+
+if [ -z "${path:-}" ]; then
+    usage >&2
+    exit 2
+fi
+if [ ! -e "$path" ]; then
+    echo "archive-pack: no such file or directory: $path" >&2
+    exit 2
+fi
+
+need tar
+need zstd
+if [ "$passphrase" -eq 1 ] || [ "${#recipients[@]}" -gt 0 ]; then
+    need age
+fi
+if [ -n "$split_size" ]; then
+    need split
+fi
+
+name=$(basename "$path")
+encrypt=0
+if [ "$passphrase" -eq 1 ] || [ "${#recipients[@]}" -gt 0 ]; then
+    encrypt=1
+fi
+if [ -z "$output" ]; then
+    output="${name}.tar.zst"
+    if [ "$encrypt" -eq 1 ]; then
+        output="${output}.age"
+    fi
+fi
+
+# Deterministic archive: name order, epoch mtime, root ownership.
+plain=${output%.age}
+if [ "$encrypt" -eq 1 ] && [ "$plain" = "$output" ]; then
+    plain="${output}.tmp.tar.zst"
+fi
+if [ -e "$output" ] || { [ "$encrypt" -eq 1 ] && [ -e "$plain" ]; }; then
+    echo "archive-pack: refusing to overwrite existing file: $output" >&2
+    exit 2
+fi
+
+parent=$(dirname "$path")
+tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --zstd \
+    -cf "$plain" -C "$parent" "$name"
+
+if [ "$encrypt" -eq 1 ]; then
+    age_args=(age)
+    for recipient in "${recipients[@]}"; do
+        age_args+=(-r "$recipient")
+    done
+    if [ "$passphrase" -eq 1 ]; then
+        age_args+=(-R)
+    fi
+    "${age_args[@]}" -o "$output" "$plain"
+    rm -- "$plain"
+fi
+
+if [ -n "$split_size" ]; then
+    split -b "$split_size" "$output" "${output}.part-"
+    rm -- "$output"
+    echo "packed $path -> ${output}.part-*"
+else
+    echo "packed $path -> $output"
+fi

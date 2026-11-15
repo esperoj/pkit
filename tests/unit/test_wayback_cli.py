@@ -215,3 +215,30 @@ def test_cli_closes_client(run_cli, patch_save_url, monkeypatch):
 
     assert code == 0, err
     assert closed == [True]
+
+
+def test_cli_host_flag_reaches_client(run_cli, patch_save_url, monkeypatch):
+    """--host flows into WaybackClient(host=...); the mirror is off only when asked."""
+    captured: dict[str, object] = {}
+
+    class SpyClient(WaybackClient):
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr("pkit.wayback.cli.WaybackClient", SpyClient)
+    patch_save_url(success_result)
+    code, _out, err = run_cli(main, ["--host", "mirror.example", *save_cmd("http://example.com")])
+
+    assert code == 0, err
+    assert captured["host"] == "mirror.example"
+
+
+def test_cli_help_lists_host(capsys):
+    with pytest.raises(SystemExit):
+        main(["--help"])
+
+    out = capsys.readouterr().out
+    assert "--host" in out
+    assert "PKIT_WAYBACK_HOST" in out
+    assert "--proxy" in out

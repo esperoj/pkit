@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# meta-diff-fzf — review record repo changes between HEAD and the working tree.
+#
+# Lists added/modified/deleted records from <repo>/<table>.json (keyed by id
+# inside each JSON array) and opens fzf with a per-record before/after diff
+# as the preview. The selected line is printed to stdout.
+#
+# Usage:
+#   scripts/meta-diff-fzf [REPO]                     # browse changes (default: $PKIT_META_REPO or records)
+#   scripts/meta-diff-fzf --preview TABLE ID REPO    # print one record's diff (used by fzf)
+#
+# Requires: git, python3, fzf.
+# JSON handling uses the Python standard library, so jq is not required.
+set -euo pipefail
+
+self=${BASH_SOURCE[0]}
+repo=${PKIT_META_REPO:-records}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "meta-diff-fzf: missing required tool: $1" >&2
+        exit 2
+    }
+}
+
+usage() {
+    sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//'
+}
+
+# --- dispatch: preview mode (called by fzf) -------------------------------
+if [ "${1:-}" = "--preview" ]; then
+    [ $# -eq 4 ] || { echo "meta-diff-fzf: usage: $0 --preview TABLE ID REPO" >&2; exit 2; }
+    exec python3 - preview "$2" "$3" "$4" <<'PY'
+import difflib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+_, _mode, table, record_id, repo = sys.argv
+
+
+def records(text):
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(data, list):
+        return {}
+    return {str(r.get("id", "")): r for r in data if isinstance(r, dict)}
+
+
+toplevel = subprocess.run(
+    ["git", "-C", repo, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
+).stdout.strip()
+prefix = subprocess.run(
+    ["git", "-C", repo, "rev-parse", "--show-prefix"], capture_output=True, text=True, check=True
+).stdout.strip()
+show = subprocess.run(
+    ["git", "-C", toplevel, "show", f"HEAD:{prefix}{table}.json"], capture_output=True, text=True
+)
+old = records(show.stdout) if show.returncode == 0 else {}
+path = Path(repo) / f"{table}.json"
+new = records(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def lines(record):
+    return json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True).splitlines()
+
+
+diff = difflib.unified_diff(
+    lines(old[record_id]) if record_id in old else [],
+    lines(new[record_id]) if record_id in new else [],
+    fromfile=f"HEAD {table}.json {record_id}",
+    tofile=f"work {table}.json {record_id}",
+    lineterm="",
+)
+sys.stdout.write("\n".join(diff) or "identical")
+sys.stdout.write("\n")
+PY
+fi
+
+# --- normal mode: list changes, browse in fzf ------------------------------
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --*)
+            echo "meta-diff-fzf: unknown option: $1" >&2
+            exit 2
+            ;;
+        *)
+            if [ -n "${repo_set:-}" ]; then
+                echo "meta-diff-fzf: unexpected argument: $1" >&2
+                exit 2
+            fi
+            repo=$1
+            repo_set=1
+            shift
+            ;;
+    esac
+done
+
+need git
+need python3
+
+if [ ! -d "$repo" ]; then
+    echo "meta-diff-fzf: no such repo directory: $repo" >&2
+    exit 2
+fi
+git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "meta-diff-fzf: not a git repository: $repo" >&2
+    exit 2
+}
+
+changes=$(python3 - list "$repo" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+repo = sys.argv[2]
+
+
+def records(text):
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(data, list):
+        return {}
+    return {str(r.get("id", "")): r for r in data if isinstance(r, dict)}
+
+
+toplevel = subprocess.run(
+    ["git", "-C", repo, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
+).stdout.strip()
+prefix = subprocess.run(
+    ["git", "-C", repo, "rev-parse", "--show-prefix"], capture_output=True, text=True, check=True
+).stdout.strip()
+tree = subprocess.run(
+    ["git", "-C", toplevel, "ls-tree", "--name-only", f"HEAD:{prefix}"],
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout.split()
+
+tables = {name.removesuffix(".json") for name in tree if name.endswith(".json")}
+tables.update(path.stem for path in Path(repo).glob("*.json"))
+
+for table in sorted(tables):
+    show = subprocess.run(
+        ["git", "-C", toplevel, "show", f"HEAD:{prefix}{table}.json"],
+        capture_output=True,
+        text=True,
+    )
+    old = records(show.stdout) if show.returncode == 0 else {}
+    path = Path(repo) / f"{table}.json"
+    new = records(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    for record_id in sorted(set(old) | set(new)):
+        if record_id not in old:
+            status = "added"
+        elif record_id not in new:
+            status = "deleted"
+        elif old[record_id] != new[record_id]:
+            status = "modified"
+        else:
+            continue
+        source = new.get(record_id) or old.get(record_id) or {}
+        label = str(source.get("title") or source.get("name") or "")
+        print(f"{table}\t{record_id}\t{status}\t{label}")
+PY
+)
+
+if [ -z "$changes" ]; then
+    echo "meta-diff-fzf: no record changes between HEAD and the working tree" >&2
+    exit 1
+fi
+
+need fzf
+
+printf '%s\n' "$changes" | fzf \
+    --delimiter='\t' \
+    --with-nth=1,2,3,4 \
+    --header='table  id  status  label  (enter: print selection)' \
+    --preview="'$self' --preview {1} {2} '$repo'"

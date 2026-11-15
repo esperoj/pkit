@@ -173,7 +173,7 @@ class FakeHttpClient(HttpClient):
 class _Server(http.server.ThreadingHTTPServer):
     """ThreadingHTTPServer carrying its routes and request log."""
 
-    routes: dict[tuple[str, str], tuple[int, str, str]]
+    routes: dict[tuple[str, str], tuple[int, str, str, dict[str, str]]]
     requests: list[dict[str, Any]]
 
 
@@ -193,14 +193,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         server.requests.append(
             {"method": self.command, "path": self.path, "headers": dict(self.headers), "body": body}
         )
-        status, content_type, payload = server.routes.get(
+        status, content_type, payload, extra = server.routes.get(
             (self.command, self.path.partition("?")[0]),
-            (404, "text/plain", "not found"),
+            (404, "text/plain", "not found", {}),
         )
         data = payload.encode() if isinstance(payload, str) else payload
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        for key, value in extra.items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -215,7 +217,7 @@ class LocalServer:
     """A real HTTP server on 127.0.0.1 for transport-level tests."""
 
     def __init__(self) -> None:
-        self.routes: dict[tuple[str, str], tuple[int, str, str]] = {}
+        self.routes: dict[tuple[str, str], tuple[int, str, str, dict[str, str]]] = {}
         self.requests: list[dict[str, Any]] = []
         self._server = _Server(("127.0.0.1", 0), _Handler)
         self._server.routes = self.routes
@@ -227,6 +229,10 @@ class LocalServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self._server.server_port}"
 
+    @property
+    def port(self) -> int:
+        return self._server.server_port
+
     def route(
         self,
         method: str,
@@ -235,12 +241,13 @@ class LocalServer:
         status: int = 200,
         json: Any = None,
         text: str = "",
+        headers: dict[str, str] | None = None,
     ) -> None:
         if json is not None:
             body, content_type = dumps(json), "application/json"
         else:
             body, content_type = text, "text/plain"
-        self.routes[(method, path)] = (status, content_type, body)
+        self.routes[(method, path)] = (status, content_type, body, dict(headers or {}))
 
     def close(self) -> None:
         self._server.shutdown()
@@ -335,6 +342,19 @@ class FakeBackend:
         if self.error is not None:
             raise self.error
         dest.write_bytes(self.store[location])
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point PKIT_CONFIG at a nonexistent file unless a test overrides it.
+
+    A developer's real ~/.config/pkit/config.toml (and stray PKIT_HTTP_* /
+    PKIT_WAYBACK_* env values) must never change test behavior: HttpClient
+    and WaybackClient read them on creation now.
+    """
+    monkeypatch.setenv("PKIT_CONFIG", str(tmp_path / "isolated-config.toml"))
+    for key in ("PKIT_HTTP_PROXY_PREFIX", "PKIT_WAYBACK_HOST"):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

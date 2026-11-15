@@ -1,4 +1,7 @@
+import json
+import re
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -201,7 +204,18 @@ def test_migrations_apply_once(tmp_path):
     with MetaDB(path) as meta:
         count = meta.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
 
-    assert count == 4
+    assert count == 5
+
+
+def test_migrations_create_expected_indexes(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path) as meta:
+        indexes = {
+            row[0]
+            for row in meta.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+
+    assert {"files_created", "persons_created", "texts_created", "software_created"} <= indexes
 
 
 def test_path_defaults_to_config(tmp_path, monkeypatch):
@@ -245,3 +259,253 @@ def test_dump_load_round_trip(tmp_path):
     assert file_rec.locations == ["ia:item/a"]
     assert isinstance(sw_rec, Software)
     assert sw_rec.series == ["Tales"]
+
+
+# --- find(sort=...) ----------------------------------------------------------
+
+
+def test_find_sort_modes(db):
+    db.put(Text(id="t2", title="two"))
+    db.put(Text(id="t1", title="one"))
+    db.conn.execute(
+        "UPDATE texts SET created_at = '2001-01-01T00:00:00Z', updated_at = '2002-01-01T00:00:00Z'"
+        " WHERE id = 't1'"
+    )
+    db.conn.execute(
+        "UPDATE texts SET created_at = '2000-01-01T00:00:00Z', updated_at = '2003-01-01T00:00:00Z'"
+        " WHERE id = 't2'"
+    )
+
+    assert [r.id for r in db.find(Text, sort="id")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="-id")] == ["t2", "t1"]
+    assert [r.id for r in db.find(Text, sort="created")] == ["t2", "t1"]
+    assert [r.id for r in db.find(Text, sort="-created")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="updated")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="-updated")] == ["t2", "t1"]
+    assert [r.id for r in db.find(Text)] == ["t2", "t1"]  # default: -updated
+
+
+def test_find_sort_tie_breaks_on_id(db):
+    db.put(Text(id="t2", title="two"))
+    db.put(Text(id="t1", title="one"))
+    db.conn.execute("UPDATE texts SET created_at = '2000-01-01T00:00:00Z'")
+
+    assert [r.id for r in db.find(Text, sort="created")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="-created")] == ["t2", "t1"]
+
+
+def test_find_sort_works_across_types(db):
+    db.put(Text(id="t1", title="one"))
+    db.put(Person(id="p1", name="Jun"))
+
+    assert [r.id for r in db.find(sort="id")] == ["p1", "t1"]
+    assert [r.id for r in db.find(sort="-id")] == ["t1", "p1"]
+
+
+def test_find_sort_with_identifier_filter(db):
+    db.put(Person(id="p1", name="A", identifiers=["wikidata:Q1"]))
+    db.put(Person(id="p2", name="B", identifiers=["wikidata:Q2"]))
+
+    assert [
+        r.id for r in db.find(Person, sort="id", identifier=["wikidata:Q1", "wikidata:Q2"])
+    ] == [
+        "p1",
+        "p2",
+    ]
+
+
+def test_find_rejects_unknown_sort(db):
+    with pytest.raises(ValueError, match="unknown sort"):
+        db.find(Text, sort="bogus")
+
+
+# --- migrate() and zero-write connections ------------------------------------
+
+
+def test_migrate_method_applies_and_reports(tmp_path):
+    path = tmp_path / "records.db"
+
+    with MetaDB(path, auto_migrate=False) as db:
+        applied = db.migrate()
+
+    assert applied == [
+        "0001_file.sql",
+        "0002_person.sql",
+        "0003_text.sql",
+        "0004_software.sql",
+        "0005_created_indexes.sql",
+    ]
+    with MetaDB(path, auto_migrate=False) as db:
+        assert db.migrate() == []
+
+
+def test_migrate_reports_only_new_files(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path):
+        pass
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    (extra / "0000_baseline.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS baseline (id TEXT);\n", encoding="utf-8"
+    )
+
+    with MetaDB(path, auto_migrate=False, migrations_dir=extra) as db:
+        assert db.migrate() == ["0000_baseline.sql"]
+
+
+def test_migrate_skips_concurrently_applied(tmp_path, monkeypatch):
+    """A second migrator that raced ahead must not crash or double-apply."""
+    path = tmp_path / "records.db"
+    real_read_text = Path.read_text
+    state = {"injected": False, "busy": False}
+
+    def racing_read_text(self, *args, **kwargs):
+        if self.name == "0001_file.sql" and not state["injected"] and not state["busy"]:
+            state["busy"] = True
+            try:
+                with MetaDB(path, auto_migrate=False) as other:
+                    other.migrate()
+                state["injected"] = True
+            finally:
+                state["busy"] = False
+        return real_read_text(self, *args, **kwargs)
+
+    with MetaDB(path, auto_migrate=False) as db:
+        monkeypatch.setattr(Path, "read_text", racing_read_text)
+        applied = db.migrate()
+
+    assert applied == []
+    with MetaDB(path, readonly=True) as db:
+        count = db.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
+    assert count == 5
+
+
+def test_connect_executes_zero_writes_when_current(tmp_path, monkeypatch):
+    path = tmp_path / "records.db"
+    with MetaDB(path):
+        pass
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    with MetaDB(path) as db:
+        assert db.get("nope") is None
+        assert db.find(Person) == []
+
+    writes = [
+        statement
+        for statement in statements
+        if re.match(
+            r"\s*(BEGIN|COMMIT|ROLLBACK|CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)\b",
+            statement,
+            re.IGNORECASE,
+        )
+    ]
+    assert writes == []
+    assert any("sqlite_master" in statement for statement in statements)
+
+
+def test_readonly_opens_read_only(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path) as db:
+        db.put(Person(id="p1", name="Jun"))
+
+    with MetaDB(path, readonly=True) as ro:
+        assert ro.get("p1") is not None
+        assert ro.readonly is True
+        with pytest.raises(sqlite3.OperationalError):
+            ro.put(Person(id="p2", name="Mai"))
+
+
+def test_readonly_never_migrates(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path):
+        pass
+    # A new pending migration must not be applied through a readonly handle.
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    (extra / "0006_extra.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS extra (id TEXT);\n", encoding="utf-8"
+    )
+
+    with MetaDB(path, readonly=True, migrations_dir=extra) as ro:
+        table = ro.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'extra'"
+        ).fetchone()
+    assert table is None
+
+
+def test_readonly_missing_file_creates_schema(tmp_path):
+    path = tmp_path / "records.db"
+
+    with MetaDB(path, readonly=True) as db:
+        assert db.find(Person) == []
+        assert db.validate() == []
+
+    assert path.exists()
+    with MetaDB(path, readonly=True) as db:
+        assert db.readonly is True  # created once, read-only afterwards
+
+
+def test_readonly_zero_writes_while_writer_holds_transaction(tmp_path, monkeypatch):
+    path = tmp_path / "records.db"
+    with MetaDB(path) as db:
+        db.put(Person(id="p1", name="Jun"))
+
+    writer = sqlite3.connect(str(path))
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("INSERT INTO persons(id, slug, name) VALUES ('p9', 'p9', 'Busy')")
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    try:
+        monkeypatch.setattr(sqlite3, "connect", traced_connect)
+        with MetaDB(path, readonly=True) as ro:
+            # Committed data is readable while the writer holds the lock.
+            assert ro.get("p1") is not None
+    finally:
+        writer.rollback()
+        writer.close()
+
+    writes = [
+        statement
+        for statement in statements
+        if re.match(
+            r"\s*(BEGIN|COMMIT|ROLLBACK|CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)\b",
+            statement,
+            re.IGNORECASE,
+        )
+    ]
+    assert writes == []
+
+
+def test_dump_orders_by_id_in_sqlite(tmp_path):
+    db_file = tmp_path / "a.db"
+    repo = tmp_path / "repo"
+    with MetaDB(db_file) as meta:
+        meta.put(Software(id="s2", title="B", kind="game"))
+        meta.put(Software(id="s1", title="A", kind="game"))
+
+    assert dump.dump(repo, db_path=db_file) == 2
+
+    rows = json.loads((repo / "software.json").read_text())
+    assert [row["id"] for row in rows] == ["s1", "s2"]
+
+
+def test_migrate_with_missing_directory_returns_empty(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path) as db:
+        assert db.migrate(tmp_path / "no-such-dir") == []

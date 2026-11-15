@@ -383,7 +383,9 @@ def verify(
         cas = None
     url = _wayback_url(config_path)
     checks: list[Check] = []
-    with ArchiveDB(db_path) as db:
+    # Read-only connection: sweeps run verify in parallel and must not
+    # contend for the SQLite write lock on connect.
+    with ArchiveDB(db_path, readonly=True) as db:
         record = db.load_file(record_id)
         hashes = hashes_of(record)
         if not remotes or "local" in remotes:

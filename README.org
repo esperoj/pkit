@@ -37,11 +37,11 @@ pkit/
 ├── version.py           # lazy version resolution
 ├── lib/                 # shared, tool-agnostic (the ONLY shared home)
 │   ├── cli.py           # exit codes, stdin, emit, fail, run_tool
-│   ├── http.py          # HttpClient: one session, one timeout, HttpError
+│   ├── http.py          # HttpClient: session, timeout, HttpError, URL rewriting
 │   └── shell.py         # run external commands
 ├── meta/
 │   ├── __main__.py      # python -m pkit.meta
-│   ├── cli.py           # dump / load / validate
+│   ├── cli.py           # dump / load / migrate / validate
 │   ├── config.py, db.py, models.py, serialize.py
 │   ├── dump.py, load.py, source.py, wikidata.py
 │   └── migrations/      # SQL migrations
@@ -53,6 +53,9 @@ pkit/
     ├── __main__.py      # python -m pkit.wayback
     ├── cli.py           # save (thin, argparse)
     └── client.py        # Wayback SDK client
+
+scripts/                 # project workflow helpers, outside the package
+└── meta-diff-fzf, archive-pack, archive-verify-sweep  # see scripts/README.org
 #+end_src
 
 Every tool has three entry points (console script ~pkit-<tool>~, BusyBox
@@ -66,6 +69,7 @@ each ~cli.py~, so all three stay in lockstep by construction.
 | ~client.py~ / SDK modules    | Must NOT print, or know stdout/stderr/exit codes                      |
 | ~lib/cli.py~                 | Generic CLI plumbing ONLY; no tool-specific logic                     |
 | ~lib/http.py~, ~lib/shell.py~ | Tool-agnostic; callers map errors to their own types                  |
+| URL rewriting                 | Only in ~lib/http.py~ (~proxy_prefix~, ~host_map~); SDKs store and return canonical URLs |
 | Wayback coercion             | Belongs in ~pkit/wayback/cli.py~                                      |
 | Version                      | Lives only in ~pyproject.toml~; use ~pkit.version.get_version()~      |
 | Version bumps                | Via ~make bump VERSION=x.y.z~ / ~make release VERSION=x.y.z~; never by hand |
