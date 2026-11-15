@@ -5,7 +5,10 @@ PIPX ?= pipx
 VENV ?= .venv
 BIN := $(VENV)/bin
 PY := $(BIN)/python
-COMPILE := $(PY) -m piptools compile --generate-hashes --strip-extras --allow-unsafe --no-emit-index-url
+PIP := $(PY) -m pip
+COMPILE := $(BIN)/pip-compile --strip-extras
+# pipx >= 1.18 defaults to the uv backend; force the pip backend everywhere.
+PIPX_ENV := PIPX_DEFAULT_BACKEND=pip
 
 .PHONY: help
 help: ## Show available make targets.
@@ -16,33 +19,30 @@ venv: ## Create a local virtual environment.
 	@test -d $(VENV) || $(PYTHON) -m venv $(VENV)
 
 .PHONY: lock
-lock: venv ## Lock runtime and dev dependencies with SHA-256 hashes.
-	@$(PY) -m piptools --version >/dev/null 2>&1 || $(PY) -m pip install --upgrade pip "pip-tools>=7.6.2"
+lock: venv ## Re-resolve dependencies; rewrite requirements*.txt (keeps current versions).
+	$(PIP) install -q pip-tools
 	$(COMPILE) -o requirements.txt pyproject.toml
-	$(COMPILE) --extra=dev -o requirements-dev.txt pyproject.toml
+	$(COMPILE) --extra dev -c requirements.txt -o requirements-dev.txt pyproject.toml
 
 .PHONY: upgrade
-upgrade: venv ## Upgrade all locked dependencies to latest versions.
-	@$(PY) -m piptools --version >/dev/null 2>&1 || $(PY) -m pip install --upgrade pip "pip-tools>=7.6.2"
+upgrade: venv ## Re-resolve all dependencies to their latest versions.
+	$(PIP) install -q pip-tools
 	$(COMPILE) --upgrade -o requirements.txt pyproject.toml
-	$(COMPILE) --upgrade --extra=dev -o requirements-dev.txt pyproject.toml
+	$(COMPILE) --upgrade --extra dev -c requirements.txt -o requirements-dev.txt pyproject.toml
 
 .PHONY: dev
-dev: venv ## Install locked dev dependencies and editable package.
-	@test -f requirements-dev.txt || { echo "error: requirements-dev.txt missing; run 'make lock' first."; exit 1; }
-	$(PY) -m pip install --require-hashes -r requirements-dev.txt
-	$(PY) -m pip install --no-deps -e .
+dev: venv ## Install locked dev dependencies and pkit (editable) into the venv.
+	@test -f requirements-dev.txt || $(MAKE) lock
+	$(PIP) install -r requirements-dev.txt
+	$(PIP) install --no-deps -e .
 
 .PHONY: install
 install: ## Install pkit globally with pipx using locked runtime deps.
-	@command -v $(PIPX) >/dev/null 2>&1 || { echo "error: pipx is required (https://pipx.pypa.io)."; exit 1; }
-	@test -f requirements.txt || { echo "error: requirements.txt missing; run 'make lock' first."; exit 1; }
-	PIPX_DEFAULT_BACKEND=pip $(PIPX) install --force .
-	PIPX_DEFAULT_BACKEND=pip $(PIPX) runpip pkit install --require-hashes --no-deps --force-reinstall -r requirements.txt
+	@test -f requirements.txt || $(MAKE) lock
+	$(PIPX_ENV) $(PIPX) install --force --backend pip --pip-args='--constraint requirements.txt' .
 
 .PHONY: uninstall
-uninstall: ## Remove global pkit installation managed by pipx.
-	@command -v $(PIPX) >/dev/null 2>&1 || { echo "error: pipx is required (https://pipx.pypa.io)."; exit 1; }
+uninstall: ## Remove the global pkit installation managed by pipx.
 	$(PIPX) uninstall pkit
 
 .PHONY: test

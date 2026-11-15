@@ -184,10 +184,11 @@ for: logging, configuration, validation, retry, schema enforcement, CLI
 generation, DI, rich output, progress bars, metrics, HTTP mocking. A
 dependency is accepted only if it removes significant code *and* is stable.
 
-Packaging and environments use PyPA standard tooling only: ~venv~ + ~pip~ +
-~pip-tools~ for hash-locked dependencies (~requirements.txt~ and
-~requirements-dev.txt~, generated from ~pyproject.toml~ via ~make lock~),
-and ~pipx~ (~pip~ backend) for global CLI installation via ~make install~.
+Packaging and environments stay in the pip family: ~venv~ + ~pip~ install,
+~pip-tools~ (~pip-compile~) hash-locks dependencies from ~pyproject.toml~
+(~requirements.txt~ and ~requirements-dev.txt~ via ~make lock~), and ~pipx~
+(pip backend forced) installs the CLI globally via ~make install~. No ~uv~,
+no hand-rolled locking. See [[file:docs/workflow.org][docs/workflow.org]].
 
 * 7. Testing
 

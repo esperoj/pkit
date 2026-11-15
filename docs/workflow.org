@@ -1,0 +1,87 @@
+#+title: pkit workflow
+
+One rule drives the toolchain: Python packages are managed only by the pip
+family — ~venv~ (ships with CPython), ~pip~ (resolves, installs), ~pip-tools~
+(~pip-compile~ generates the locks), and ~pipx~ (global CLI installs). No
+~uv~ anywhere: pipx >= 1.18 defaults to its uv backend, so every pipx call
+in the Makefile passes ~--backend pip~ (plus ~PIPX_DEFAULT_BACKEND=pip~)
+and no step ever resolves through uv. No hand-rolled locking script either:
+locking is ~pip-compile~, installing is ~pip~.
+
+* Development
+
+#+begin_src sh
+make dev      # venv + locked dev dependencies + pkit (editable)
+make check    # format-check, lint, types, tests with coverage
+#+end_src
+
+~make dev~ is the only setup step. On a fresh clone (no lock files) it runs
+~make lock~ first. Otherwise it installs exactly the committed pins — one
+line per package, ~name==version~ — then adds ~pkit~ itself editable with
+~--no-deps~: the project is never resolved, only installed.
+
+* Locking
+
+#+begin_src sh
+make lock       # keep current versions, resolve only what is new
+make upgrade    # re-resolve everything to the latest versions
+#+end_src
+
+Both run ~pip-compile~ directly against ~pyproject.toml~, so dependencies
+are declared in one place only, and write:
+
+- ~requirements.txt~ — runtime dependencies
+- ~requirements-dev.txt~ — runtime + dev dependencies (a superset)
+
+The dev lock is compiled with ~-c requirements.txt~ so shared pins stay
+identical between the two files. Locks are plain version pins — no
+artifact hashes — so ~make lock~ stays fast even on slow machines, and one
+committed lock works on every machine, Python and platform (x86_64,
+aarch64, Termux; 3.13-3.15): it records versions, not platform-specific
+artifacts. As usual for pip-compile, ~make lock~ reuses the versions
+already present in the lock files and only resolves what is new; ~make
+upgrade~ re-resolves from scratch. After editing dependencies in
+~pyproject.toml~, run ~make lock~ (or ~make upgrade~) and commit both
+files. Dependabot also watches the lock files monthly.
+
+* Global install
+
+#+begin_src sh
+make install      # pipx venv: pkit + locked runtime deps
+make uninstall
+#+end_src
+
+One pipx command, nothing resolved to "latest":
+
+~pipx install --force --backend pip --pip-args='--constraint
+requirements.txt' .~ — ~pkit~ plus every dependency constrained to the
+locked versions. Every version in the pipx venv comes from the committed
+lock; nothing floats.
+
+* Why ~pip-compile~ and not ~pip lock~ / ~pylock.toml~
+
+pip 26.1+ ships an experimental ~pip lock~ command that writes PEP 751
+~pylock.toml~ files, and pipx can install straight from them (~pipx
+install --lock~). It is the likely future, and switching will be a small
+change — but today a ~pip lock~ file records only the artifacts of the
+interpreter and platform it was created on: locking on a 3.12/x86_64
+desktop yields cp312 manylinux wheels only, so one committed lock cannot
+install on the 3.13-3.15 CI matrix or on Termux. A pip-compile
+requirements file records plain version pins — no platform-specific
+artifacts — so a single lock works everywhere.
+
+* CI
+
+~.github/workflows/ci.yml~ runs ~make dev~ and ~make check~ on Python
+3.13, 3.14 and 3.15 — the same targets as local development, nothing
+extra. The committed lock files key the pip cache between runs.
+
+* Release
+
+#+begin_src sh
+make release VERSION=1.2.3
+git push origin main v1.2.3
+#+end_src
+
+From a clean ~main~ branch: bump the version, ~make dev~, ~make check~,
+commit, tag.
