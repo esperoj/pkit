@@ -141,7 +141,8 @@ def _merge_record(
     for name in model.scalar_fields:
         prev = getattr(existing, name) if existing is not None else None
         curr = values.get(name)
-        if curr not in (None, ""):
+        # 0 is the empty value of int scalars (duration), like "" for str.
+        if curr not in (None, "", 0):
             payload[name] = curr
         elif prev is not None:
             payload[name] = prev

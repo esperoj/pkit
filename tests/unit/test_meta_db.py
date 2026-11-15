@@ -8,7 +8,17 @@ import pytest
 
 from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
-from pkit.meta.models import File, Person, Record, Software, Text, record_model
+from pkit.meta.models import (
+    File,
+    Note,
+    Person,
+    Record,
+    Software,
+    Sound,
+    Text,
+    Video,
+    record_model,
+)
 
 SHA256 = "a" * 64
 SHA1 = "b" * 40
@@ -69,6 +79,109 @@ def test_software_round_trip(db):
     assert record.developers == ["Namco Tales Studio"]
     assert record.platforms == ["PlayStation 2", "Nintendo 3DS"]
     assert [r.id for r in db.find(Software, where={"identifiers": "wikidata:Q82050"})] == ["s1"]
+
+
+def test_video_round_trip(db):
+    db.put(
+        Video(
+            id="v1",
+            title="Ghost in the Shell",
+            kind="movie",
+            publication_date="1995-11-18",
+            lang="ja",
+            duration=4800,
+            series=["Ghost in the Shell"],
+            directors=["Mamoru Oshii"],
+            publishers=["Production I.G"],
+            genres=["science fiction"],
+            identifiers=["wikidata:Q900001", "imdb:tt0000001"],
+        )
+    )
+
+    record = db.get("v1")
+
+    assert isinstance(record, Video)
+    assert record.title == "Ghost in the Shell"
+    assert record.kind == "movie"
+    assert record.duration == 4800
+    assert record.directors == ["Mamoru Oshii"]
+    assert [r.id for r in db.find(Video, where={"identifiers": "imdb:tt0000001"})] == ["v1"]
+    assert [r.id for r in db.find(Video, where={"kind": "movie"})] == ["v1"]
+
+
+def test_sound_round_trip(db):
+    db.put(
+        Sound(
+            id="a1",
+            title="Unravel",
+            kind="song",
+            publication_date="2014-07-23",
+            lang="ja",
+            duration=240,
+            performers=["TK from Ling tosite sigure"],
+            publishers=["Sony Music"],
+            genres=["alternative rock"],
+            identifiers=["isrc:XX0000000000"],
+        )
+    )
+
+    record = db.get("a1")
+
+    assert isinstance(record, Sound)
+    assert record.title == "Unravel"
+    assert record.kind == "song"
+    assert record.duration == 240
+    assert record.performers == ["TK from Ling tosite sigure"]
+    assert [r.id for r in db.find(Sound, where={"identifiers": "isrc:XX0000000000"})] == ["a1"]
+
+
+def test_note_round_trip_and_subject_filters(db):
+    """Reviews, reading progress, and play logs are one model over any type."""
+    db.put(Text(id="t1", title="Pandora Hearts", kind="manga"))
+    db.put(Software(id="s1", title="Tales of the Abyss", kind="game"))
+    db.put(
+        Note(
+            id="n1",
+            title="Reread",
+            kind="review",
+            body="Still great.",
+            rating="9/10",
+            subject_ids=["t1"],
+        )
+    )
+    db.put(
+        Note(
+            id="n2",
+            kind="reading",
+            start_date="2024-01-01",
+            end_date="2024-03-01",
+            subject_ids=["t1"],
+        )
+    )
+    db.put(Note(id="n3", kind="play", duration=5400, subject_ids=["s1", "t1"]))
+
+    stored = db.get("n1")
+    assert isinstance(stored, Note)
+    assert stored.body == "Still great."
+    assert stored.rating == "9/10"
+    assert db.get("n2").start_date == "2024-01-01"
+    play = db.get("n3")
+    assert play.duration == 5400
+
+    assert {r.id for r in db.find(Note, where={"subject_ids": "t1"})} == {"n1", "n2", "n3"}
+    assert [r.id for r in db.find(Note, where={"subject_ids": "s1"})] == ["n3"]
+    assert [r.id for r in db.find(Note, where={"kind": "review"})] == ["n1"]
+    assert db.find(Note, where={"subject_ids": "ghost"}) == []
+
+
+def test_find_where_narrows_across_new_and_old_models(db):
+    db.put(Video(id="v1", title="Abyss", genres=["science fiction"]))
+    db.put(Sound(id="a1", title="Abyss", genres=["science fiction"]))
+    db.put(Text(id="t1", title="Abyss"))
+
+    # genres narrows to the models carrying it; title to all three
+    assert {r.id for r in db.find(where={"genres": "science fiction"})} == {"v1", "a1"}
+    assert {r.id for r in db.find(where={"title": "Abyss"})} == {"t1", "v1", "a1"}
 
 
 def test_put_accepts_mapping(db):
@@ -374,8 +487,8 @@ def test_get_probes_stored_models_in_order_until_first_match(db):
         assert db.get("p1") is not None
     finally:
         db.conn.set_trace_callback(None)
-    # texts is probed first and misses, persons hits; nothing after the hit
-    assert len(statements) == 2
+    # texts, videos, sounds are probed and miss, persons hits; nothing after
+    assert len(statements) == 4
 
 
 def test_get_short_circuits_on_the_id_probe(db):
@@ -481,7 +594,7 @@ def test_migrations_apply_once(tmp_path):
     with MetaDB(path) as meta:
         count = meta.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
 
-    assert count == 5
+    assert count == 6
 
 
 def test_migrations_create_expected_indexes(tmp_path):
@@ -497,6 +610,9 @@ def test_migrations_create_expected_indexes(tmp_path):
         "persons_created",
         "texts_created",
         "software_created",
+        "videos_created",
+        "sounds_created",
+        "notes_created",
         "files_sha256",
         "files_sha1",
         "files_md5",
@@ -634,6 +750,7 @@ def test_migrate_method_applies_and_reports(tmp_path):
         "0003_text.sql",
         "0004_software.sql",
         "0005_created_indexes.sql",
+        "0006_media.sql",
     ]
     with MetaDB(path, auto_migrate=False) as db:
         assert db.migrate() == []
@@ -678,7 +795,7 @@ def test_migrate_skips_concurrently_applied(tmp_path, monkeypatch):
     assert applied == []
     with MetaDB(path, readonly=True) as db:
         count = db.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
-    assert count == 5
+    assert count == 6
 
 
 def test_connect_executes_zero_writes_when_current(tmp_path, monkeypatch):

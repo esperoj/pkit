@@ -43,7 +43,8 @@ pkit/
 │   ├── __main__.py      # python -m pkit.meta
 │   ├── cli.py           # dump / load / migrate / validate
 │   ├── config.py, db.py, models.py, serialize.py
-│   ├── dump.py, load.py, source.py, wikidata.py
+│   ├── dump.py, load.py, source.py
+│   ├── wikidata/        # extract.py (entity->values), plans.py, client.py
 │   └── migrations/      # SQL migrations
 ├── archive/
 │   ├── __main__.py      # python -m pkit.archive

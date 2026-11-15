@@ -1,5 +1,6 @@
 """The meta load URL pipeline: CLI -> source -> sqlite, with only the wire faked."""
 
+import json
 import uuid
 
 import pytest
@@ -8,7 +9,7 @@ from pkit.lib.cli import EXIT_OK, EXIT_TEMPFAIL
 from pkit.meta import load
 from pkit.meta.cli import main as meta_main
 from pkit.meta.db import MetaDB
-from pkit.meta.models import Person, Software, Text
+from pkit.meta.models import Person, Software, Sound, Text, Video
 from pkit.meta.wikidata import API_URL, WikidataSource
 
 
@@ -65,6 +66,17 @@ def _time_stmt(prop: str, iso_time: str, precision: int = 11) -> dict:
     }
 
 
+def _quantity_stmt(prop: str, amount: str) -> dict:
+    return {
+        "mainsnak": {
+            "snaktype": "value",
+            "property": prop,
+            "datavalue": {"type": "quantity", "value": {"amount": amount, "unit": "1"}},
+        },
+        "rank": "normal",
+    }
+
+
 def entity(*, name: str = "Douglas Adams") -> dict:
     """A minimal human (Q5) entity the Person plan can map."""
     return {
@@ -111,6 +123,58 @@ def game_entity() -> dict:
             "P5290": [_str_stmt("P5290", "25771")],
         },
     }
+
+
+def film_entity() -> dict:
+    """A film-shaped (P31 Q11424) entity; QIDs are test fixtures, not real items."""
+    return {
+        "id": "Q900001",
+        "labels": {"en": {"value": "Ghost in the Shell"}},
+        "descriptions": {"en": {"value": "1995 animated film"}},
+        "claims": {
+            "P31": [_item_stmt("P31", "Q11424")],
+            "P577": [_time_stmt("P577", "+1995-11-18T00:00:00Z")],
+            "P407": [_item_stmt("P407", "Q5287")],
+            "P57": [_item_stmt("P57", "Q900010")],
+            "P272": [_item_stmt("P272", "Q900011")],
+            "P136": [_item_stmt("P136", "Q900012")],
+            "P2047": [_quantity_stmt("P2047", "+4800")],
+            "P345": [_str_stmt("P345", "tt0000001")],
+        },
+    }
+
+
+def song_entity() -> dict:
+    """A song-shaped (P31 Q7366) entity; QIDs are test fixtures, not real items."""
+    return {
+        "id": "Q900002",
+        "labels": {"en": {"value": "Unravel"}},
+        "descriptions": {"en": {"value": "2014 song"}},
+        "claims": {
+            "P31": [_item_stmt("P31", "Q7366")],
+            "P577": [_time_stmt("P577", "+2014-07-23T00:00:00Z")],
+            "P175": [_item_stmt("P175", "Q900020")],
+            "P264": [_item_stmt("P264", "Q900021")],
+            "P136": [_item_stmt("P136", "Q900022")],
+            "P2047": [_quantity_stmt("P2047", "+240")],
+            "P436": [_str_stmt("P436", "0b0c1b1a-2d3e-4f5a-6b7c-8d9e0f1a2b3c")],
+            "P1243": [_str_stmt("P1243", "XX0000000000")],
+        },
+    }
+
+
+def film_labels() -> str:
+    """One batched label warm covering the film entity's referenced QIDs."""
+    return json.dumps(
+        {
+            "entities": {
+                "Q5287": {"id": "Q5287", "labels": {"en": {"value": "Japanese"}}},
+                "Q900010": {"id": "Q900010", "labels": {"en": {"value": "Mamoru Oshii"}}},
+                "Q900011": {"id": "Q900011", "labels": {"en": {"value": "Production I.G"}}},
+                "Q900012": {"id": "Q900012", "labels": {"en": {"value": "science fiction"}}},
+            }
+        }
+    )
 
 
 @pytest.fixture
@@ -262,6 +326,101 @@ def test_load_imports_wikidata_software_and_prefers_game_over_text(wikidata, db_
     assert isinstance(vn_rec, Software)
     assert vn_rec.kind == "game"
     assert "vndb:v42" in vn_rec.identifiers
+
+
+def test_load_imports_wikidata_film(wikidata, db_path):
+    wikidata.enqueue(json={"entities": {"Q900001": film_entity()}})
+    wikidata.enqueue(text=film_labels())
+
+    assert load.load("wikidata:Q900001", db_path=db_path) == 1
+    assert len(wikidata.requests) == 2  # 1 entity fetch + 1 batched label warm
+
+    with MetaDB(db_path) as meta:
+        assert meta.find(Text) == [] and meta.find(Software) == []
+        matches = meta.find(Video, where={"identifiers": "wikidata:Q900001"})
+    assert len(matches) == 1
+    film = matches[0]
+    assert isinstance(film, Video)
+    assert film.title == "Ghost in the Shell"
+    assert film.kind == "movie"
+    assert film.publication_date == "1995-11-18"
+    assert film.lang == "Japanese"  # taxonomy fields stay English (like Text.lang)
+    assert film.duration == 4800
+    assert film.directors == ["Mamoru Oshii"]
+    assert film.publishers == ["Production I.G"]
+    assert film.genres == ["science fiction"]
+    assert "imdb:tt0000001" in film.identifiers
+    assert film.extra == {
+        "i18n": {"en": {"title": "Ghost in the Shell", "description": "1995 animated film"}}
+    }
+
+
+def test_load_imports_wikidata_song(wikidata, db_path):
+    labels = json.dumps(
+        {
+            "entities": {
+                "Q900020": {"id": "Q900020", "labels": {"en": {"value": "TK"}}},
+                "Q900021": {"id": "Q900021", "labels": {"en": {"value": "Sony Music"}}},
+                "Q900022": {"id": "Q900022", "labels": {"en": {"value": "rock"}}},
+            }
+        }
+    )
+    wikidata.enqueue(json={"entities": {"Q900002": song_entity()}})
+    wikidata.enqueue(text=labels)
+
+    assert load.load("wikidata:Q900002", db_path=db_path) == 1
+
+    with MetaDB(db_path) as meta:
+        matches = meta.find(Sound, where={"identifiers": "wikidata:Q900002"})
+    assert len(matches) == 1
+    song = matches[0]
+    assert isinstance(song, Sound)
+    assert song.title == "Unravel"
+    assert song.kind == "song"
+    assert song.publication_date == "2014-07-23"
+    assert song.duration == 240
+    assert song.performers == ["TK"]
+    assert song.publishers == ["Sony Music"]
+    assert song.genres == ["rock"]
+    assert "isrc:XX0000000000" in song.identifiers
+    assert "musicbrainz:0b0c1b1a-2d3e-4f5a-6b7c-8d9e0f1a2b3c" in song.identifiers
+
+
+def test_load_imports_wikidata_video_by_id_prop_only(wikidata, db_path):
+    clip = {
+        "id": "Q900005",
+        "labels": {"en": {"value": "Example Clip"}},
+        "claims": {"P345": [_str_stmt("P345", "tt9999999")]},
+    }
+    wikidata.enqueue(json={"entities": {"Q900005": clip}})
+
+    assert load.load("wikidata:Q900005", db_path=db_path) == 1
+
+    with MetaDB(db_path) as meta:
+        matches = meta.find(Video, where={"identifiers": "imdb:tt9999999"})
+    assert len(matches) == 1
+    clip = matches[0]
+    assert isinstance(clip, Video)
+    assert clip.kind == "video"  # no P31 class, so the plan default
+
+
+def test_load_refresh_keeps_duration_without_claim(wikidata, db_path):
+    wikidata.enqueue(json={"entities": {"Q900001": film_entity()}})
+    wikidata.enqueue(text=film_labels())
+    trimmed = film_entity()
+    trimmed["claims"].pop("P2047")  # the refreshed fetch no longer has a duration
+    wikidata.enqueue(json={"entities": {"Q900001": trimmed}})
+    wikidata.enqueue(text=film_labels())
+
+    assert load.load("wikidata:Q900001", db_path=db_path) == 1
+    assert load.load("wikidata:Q900001", db_path=db_path, refresh=True) == 1
+
+    with MetaDB(db_path) as meta:
+        matches = meta.find(Video, where={"identifiers": "wikidata:Q900001"})
+    assert len(matches) == 1
+    film = matches[0]
+    assert isinstance(film, Video)
+    assert film.duration == 4800  # 0 from the plan must not overwrite it
 
 
 def test_load_merges_existing_record_matched_by_other_identifier(wikidata, db_path):

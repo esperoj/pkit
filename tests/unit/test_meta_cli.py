@@ -183,6 +183,7 @@ def test_migrate_prints_applied_names(run_cli, db_path):
         "0003_text.sql",
         "0004_software.sql",
         "0005_created_indexes.sql",
+        "0006_media.sql",
     ]
 
 

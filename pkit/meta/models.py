@@ -8,10 +8,13 @@ __all__ = [
     "RECORD_TYPES",
     "File",
     "Link",
+    "Note",
     "Person",
     "Record",
     "Software",
+    "Sound",
     "Text",
+    "Video",
     "new_id",
     "record_model",
     "stored_models",
@@ -125,6 +128,53 @@ class Text(Record):
 
 
 @record_model
+class Video(Record):
+    """A moving-picture work: movie, series, episode, anime, ... (kind picks).
+
+    duration is seconds. directors and publishers are plain strings, like
+    Software's developers — Person links stay a Text-only feature until a
+    second model actually needs them.
+    """
+
+    type: Literal["video"] = "video"
+    table: ClassVar[str] = "videos"
+
+    title: str = ""
+    kind: str = ""
+    publication_date: str = ""
+    lang: str = ""
+    description: str = ""
+    duration: int = 0
+    series: list[str] = field(default_factory=list)
+    directors: list[str] = field(default_factory=list)
+    publishers: list[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
+
+
+@record_model
+class Sound(Record):
+    """An audio work: song, album, single, podcast, ... (kind picks).
+
+    duration is seconds. performers covers artists, narrators, and hosts;
+    publishers covers record labels.
+    """
+
+    type: Literal["sound"] = "sound"
+    table: ClassVar[str] = "sounds"
+
+    title: str = ""
+    kind: str = ""
+    publication_date: str = ""
+    lang: str = ""
+    description: str = ""
+    duration: int = 0
+    series: list[str] = field(default_factory=list)
+    performers: list[str] = field(default_factory=list)
+    publishers: list[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
+
+
+@record_model
 class Person(Record):
     type: Literal["person"] = "person"
     table: ClassVar[str] = "persons"
@@ -177,3 +227,29 @@ class File(Record):
     sha1: str = ""
     md5: str = ""
     locations: list[str] = field(default_factory=list)
+
+
+@record_model
+class Note(Record):
+    """The personal layer: one annotation attached to any other record.
+
+    Reviews, progress, and activity logs are a single model, not one model
+    per reviewed type: kind picks the flavor ("review", "reading",
+    "play", ...), subject_ids points at cataloged records of any type, and
+    rating / start_date / end_date / duration carry the personal numbers.
+    Dates are ISO (YYYY[-MM[-DD]]); duration is seconds. subject_ids is a
+    plain array field, so notes about anything are queried the same way:
+    db.find(Note, where={"subject_ids": book_id}).
+    """
+
+    type: Literal["note"] = "note"
+    table: ClassVar[str] = "notes"
+
+    title: str = ""
+    kind: str = ""
+    body: str = ""
+    rating: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    duration: int = 0
+    subject_ids: list[str] = field(default_factory=list)
