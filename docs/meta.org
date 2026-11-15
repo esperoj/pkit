@@ -81,8 +81,11 @@ with MetaDB() as db:
     record = db.get("t1")
     records = db.find(Text)  # newest first (find(cls, sort="-updated") by default)
     oldest = db.find(Text, sort="created")  # or id, -id, created, -created, updated
-    matches = db.find(identifier="wikidata:Q42")
-    issues = db.validate()  # orphans, duplicate ids/identifiers
+    matches = db.find(where={"identifiers": "wikidata:Q42"})
+    dark = db.find(Text, where={"genres": "dark fantasy", "author_ids": ["p1", "p2"]})
+    author = db.get("wikidata:Q42", by="identifiers")  # probe any queryable field
+    known = db.exists("p1")  # str probes id by default; by= picks another field
+    issues = db.validate()  # orphans, duplicate ids/identifiers/sha256s
 
 with MetaDB(readonly=True) as db:  # no DDL, no write lock, no migrations
     record = db.get("t1")
@@ -104,10 +107,30 @@ On ~Text~ and ~Software~, ~kind~ distinguishes formats (~manga~,
 ~novel~, ~article~, ~game~, ~software~, …), ~series~ is a list of
 strings, and publishers, developers, and platforms are plain strings
 (~Text.author_ids~ links to ~Person~). ~File.id~ is ~sha256:<hex>~ so
-re-adding the same bytes is the same row across machines, and
-~sha256:<hex>~ is also stored in ~File.identifiers~ alongside alternate
-hashes (~sha1:...~, ~md5:...~). ~db_path~ defaults to ~[meta] db_path~ /
+re-adding the same bytes is the same row across machines; ~sha256~,
+~sha1~ and ~md5~ live in dedicated indexed columns on ~files~ (fast
+~by="sha1"~ / ~by=("sha1", "md5")~ lookups), and ~File.identifiers~ is
+for external IDs only. ~db_path~ defaults to ~[meta] db_path~ /
 ~$PKIT_META_DB_PATH~.
+
+** Queries and probes
+
+~find~'s ~where~ mapping ANDs filters: scalar fields (~id~, ~slug~, ~name~,
+…) compare by equality (a collection becomes ~IN~), array fields
+(~identifiers~, ~genres~, ~locations~, …) match by membership, and link
+fields (~author_ids~) match through the link table; an empty collection
+matches nothing, and unknown or dict fields (~extra~) raise ~ValueError~.
+With no ~record_type~, only stored models carrying every ~where~ key are
+searched.
+
+~get~ / ~exists~ probe a record id (by ~id~ unless ~by~ says otherwise), a
+~Record~ instance, or a mapping — with ~"type"~ to pin the model, or without
+to probe whichever stored model has each key. Each non-empty ~unique~ field
+of the target model is tried in order as its own indexed ~LIMIT 1~ query
+(the first hit wins; ~File~ probes ~id~, ~sha256~, ~sha1~, ~md5~), and empty
+values (~None~, ~""~, ~[]~) are skipped. Probing a mapping with
+~"id": ""~ instead of a random UUID is the safe way to match on the other
+fields only. ~put~ stays keyed on ~id~ (~ON CONFLICT(id)~).
 
 Connections check migrations read-only first and only take a write lock
 when something is pending, so concurrent readers (a parallel

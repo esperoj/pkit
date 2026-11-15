@@ -2,14 +2,18 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
-from pkit.meta.models import File, Person, Software, Text
+from pkit.meta.models import File, Person, Record, Software, Text, record_model
 
-ID = "sha256:" + "a" * 64
+SHA256 = "a" * 64
+SHA1 = "b" * 40
+MD5 = "c" * 32
+ID = f"sha256:{SHA256}"
 
 
 @pytest.fixture
@@ -64,7 +68,7 @@ def test_software_round_trip(db):
     assert record.series == ["Tales"]
     assert record.developers == ["Namco Tales Studio"]
     assert record.platforms == ["PlayStation 2", "Nintendo 3DS"]
-    assert [r.id for r in db.find(Software, identifier="wikidata:Q82050")] == ["s1"]
+    assert [r.id for r in db.find(Software, where={"identifiers": "wikidata:Q82050"})] == ["s1"]
 
 
 def test_put_accepts_mapping(db):
@@ -110,19 +114,98 @@ def test_find_filters_and_paginates(db):
     assert len(db.find(limit=2, offset=1)) == 2
 
 
-def test_find_by_identifier(db):
-    db.put(Person(id="p1", name="Douglas", identifiers=["wikidata:Q42", "viaf:113"]))
-    db.put(Text(id="t1", title="Guide", identifiers=["isbn13:9780", "wikidata:Q187655"]))
-    db.put(Software(id="s1", title="Abyss", identifiers=["wikidata:Q82050", "igdb:abyss"]))
-    db.put(File(id=ID, size=3, identifiers=[ID, "sha1:bbb"]))
+def test_find_where_scalar_equality(db):
+    db.put(Person(id="p1", name="Jun", country="JP"))
+    db.put(Person(id="p2", name="Mai", country="VN"))
 
-    assert [r.id for r in db.find(identifier="wikidata:Q42")] == ["p1"]
-    assert [r.id for r in db.find(Text, identifier=["isbn13:9780", "missing"])] == ["t1"]
-    assert [r.id for r in db.find(Software, identifier="igdb:abyss")] == ["s1"]
-    assert [r.id for r in db.find(identifier="sha1:bbb")] == [ID]
-    assert db.find(identifier="missing") == []
-    assert db.find(identifier="") == []
-    assert db.find(identifier=[]) == []
+    assert [r.id for r in db.find(Person, where={"name": "Jun"})] == ["p1"]
+    assert [r.id for r in db.find(Person, where={"country": "VN"})] == ["p2"]
+    assert db.find(Person, where={"name": "nope"}) == []
+
+
+def test_find_where_scalar_collection_in(db):
+    db.put(Person(id="p1", name="Jun"))
+    db.put(Person(id="p2", name="Mai"))
+    db.put(Person(id="p3", name="Ken"))
+
+    assert {r.id for r in db.find(Person, where={"name": ["Jun", "Ken"]})} == {"p1", "p3"}
+    assert {r.id for r in db.find(Person, where={"name": ("Mai", "Mai")})} == {"p2"}
+    assert db.find(Person, where={"name": []}) == []
+
+
+def test_find_where_array_inclusion(db):
+    db.put(Person(id="p1", name="Jun", identifiers=["wikidata:Q42", "viaf:113"]))
+    db.put(Text(id="t1", title="Guide", genres=["dark fantasy"], identifiers=["isbn13:9780"]))
+    db.put(Software(id="s1", title="Abyss", platforms=["Linux"], identifiers=["igdb:abyss"]))
+    db.put(File(id=ID, size=3, locations=["ia:x"]))
+
+    assert [r.id for r in db.find(where={"identifiers": "wikidata:Q42"})] == ["p1"]
+    assert [r.id for r in db.find(Text, where={"identifiers": ["isbn13:9780", "nope"]})] == ["t1"]
+    assert [r.id for r in db.find(where={"genres": "dark fantasy"})] == ["t1"]
+    assert [r.id for r in db.find(where={"platforms": ["Linux", "Plan 9"]})] == ["s1"]
+    assert [r.id for r in db.find(File, where={"locations": "ia:x"})] == [ID]
+    assert db.find(where={"identifiers": []}) == []
+    assert db.find(where={"identifiers": "missing"}) == []
+
+
+def test_find_where_link_filter(db):
+    db.put(Person(id="p1", name="Jun"))
+    db.put(Person(id="p2", name="Mai"))
+    db.put(Text(id="t1", title="one", author_ids=["p1"]))
+    db.put(Text(id="t2", title="two", author_ids=["p2", "p1"]))
+    db.put(Text(id="t3", title="three"))
+
+    assert {r.id for r in db.find(Text, where={"author_ids": "p1"})} == {"t1", "t2"}
+    assert {r.id for r in db.find(Text, where={"author_ids": ["p2"]})} == {"t2"}
+    assert db.find(Text, where={"author_ids": []}) == []
+    assert db.find(Text, where={"author_ids": "ghost"}) == []
+
+
+def test_find_where_and_combination(db):
+    db.put(Person(id="p1", name="Jun"))
+    db.put(Text(id="t1", title="one", kind="manga", genres=["dark fantasy"], author_ids=["p1"]))
+    db.put(Text(id="t2", title="two", kind="manga", genres=["comedy"]))
+    db.put(Text(id="t3", title="three", kind="novel", genres=["dark fantasy"]))
+
+    assert {r.id for r in db.find(Text, where={"kind": "manga", "genres": "dark fantasy"})} == {
+        "t1"
+    }
+    assert {r.id for r in db.find(Text, where={"kind": "manga", "author_ids": "p1"})} == {"t1"}
+    assert db.find(Text, where={"kind": "novel", "author_ids": "p1"}) == []
+
+
+def test_find_where_narrows_to_models_with_all_keys(db):
+    db.put(Person(id="p1", name="Jun"))
+    db.put(Software(id="s1", title="app", platforms=["Linux"]))
+    db.put(Text(id="t1", title="book"))
+
+    assert [r.id for r in db.find(where={"name": "Jun"})] == ["p1"]
+    assert [r.id for r in db.find(where={"platforms": "Linux"})] == ["s1"]
+    assert [r.id for r in db.find(where={"title": "app"})] == ["s1"]
+    # title lives on Text and Software; platforms only on Software.
+    assert [r.id for r in db.find(where={"title": "app", "platforms": "Linux"})] == ["s1"]
+    assert db.find(where={"title": "app", "name": "Jun"}) == []  # no model has both
+    with pytest.raises(ValueError, match="no stored record type has a queryable field"):
+        db.find(where={"bogus": "x"})
+
+
+def test_find_where_rejects_unknown_and_dict_fields(db):
+    with pytest.raises(ValueError, match="not a queryable field on person"):
+        db.find(Person, where={"bogus": "x"})
+    with pytest.raises(ValueError, match="not a queryable field on person"):
+        db.find(Person, where={"extra": {"k": "v"}})
+    # field validation wins over value handling: an empty collection
+    # elsewhere in the same where cannot mask an unknown field
+    with pytest.raises(ValueError, match="not a queryable field on person"):
+        db.find(Person, where={"name": [], "bogus": "x"})
+
+
+def test_find_where_rejects_none_and_mapping_values(db):
+    db.put(Person(id="p1", name="Jun"))
+    with pytest.raises(ValueError, match="not a filter value"):
+        db.find(Person, where={"name": None})
+    with pytest.raises(ValueError, match="not a filter value"):
+        db.find(Person, where={"identifiers": {"wikidata:Q42": 1}})
 
 
 def test_find_newest_first(db):
@@ -143,11 +226,191 @@ def test_find_rejects_non_record_class(db):
         db.find(str)
 
 
-def test_exists(db):
+def test_exists_by_id(db):
     db.put(Person(id="p1", name="Jun"))
 
     assert db.exists("p1")
     assert not db.exists("nope")
+    assert not db.exists("")
+
+
+def test_get_by_id_default(db):
+    db.put(Person(id="p1", name="Jun"))
+
+    record = db.get("p1")
+    assert isinstance(record, Person)
+    assert record.name == "Jun"
+    assert db.get("nope") is None
+    assert db.get("") is None
+
+
+def test_get_and_exists_by_identifiers(db):
+    db.put(Person(id="p1", name="Jun", identifiers=["wikidata:Q42", "viaf:113"]))
+
+    assert db.exists("wikidata:Q42", by="identifiers")
+    record = db.get("wikidata:Q42", by="identifiers")
+    assert isinstance(record, Person)
+    assert record.id == "p1"
+    assert not db.exists("viaf:999", by="identifiers")
+    assert db.get("viaf:999", by="identifiers") is None
+
+
+def test_get_and_exists_by_hash_fields(db):
+    db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    for field, value in (("sha256", SHA256), ("sha1", SHA1), ("md5", MD5)):
+        assert db.exists(value, by=field)
+        record = db.get(value, by=field)
+        assert isinstance(record, File)
+        assert record.id == ID
+    assert not db.exists("0" * 40, by="sha1")
+
+
+def test_get_by_field_tuple(db):
+    db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    record = db.get(MD5, by=("sha1", "md5"))  # sha1 misses, md5 hits
+    assert isinstance(record, File)
+    assert record.id == ID
+    assert db.get("0" * 40, by=("sha1", "md5")) is None
+
+
+def test_get_record_probe_uses_unique_fields(db):
+    db.put(Person(id="p1", name="Jun", identifiers=["wikidata:Q42"]))
+    db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    record = db.get(Person(id="", identifiers=["wikidata:Q42"]))  # id skipped as empty
+    assert isinstance(record, Person)
+    assert record.id == "p1"
+    file_probe = db.get(File(sha1=SHA1))  # id and sha256 skipped as empty
+    assert isinstance(file_probe, File)
+    assert file_probe.id == ID
+    assert db.exists(File(md5=MD5))
+    assert not db.exists(File(sha1="0" * 40))
+
+
+def test_get_record_probe_with_explicit_by(db):
+    db.put(Person(id="p1", name="Jun"))
+
+    record = db.get(Person(id="", name="Jun"), by="name")
+    assert isinstance(record, Person)
+    assert record.id == "p1"
+    assert db.exists(Person(id="", name="Jun"), by="name")
+
+
+def test_get_record_probe_rejects_mismatched_record_type(db):
+    db.put(Person(id="p1", name="Jun"))
+    with pytest.raises(ValueError, match="does not match"):
+        db.get(Person(id="p1"), record_type="text")
+    with pytest.raises(ValueError, match="does not match"):
+        db.get(Person(id="p1"), record_type=Text)
+
+
+def test_get_mapping_probe_with_type(db):
+    db.put(Person(id="p1", name="Jun", identifiers=["wikidata:Q42"]))
+
+    record = db.get({"type": "person", "identifiers": ["wikidata:Q42"]})
+    assert isinstance(record, Person)
+    assert record.id == "p1"
+    assert db.exists({"type": "person", "identifiers": "wikidata:Q42"})
+    assert db.get({"type": "person", "id": "", "slug": ""}) is None  # empties skipped
+    assert db.exists({"type": "person", "identifiers": "missing"}) is False
+
+
+def test_get_mapping_probe_without_type(db):
+    db.put(Person(id="p1", name="Jun"))
+    db.put(File(id=ID, size=1, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    record = db.get({"name": "Jun"})
+    assert isinstance(record, Person)
+    assert record.id == "p1"
+    record = db.get({"sha1": SHA1})
+    assert isinstance(record, File)
+    assert record.id == ID
+    assert db.get({"name": "nope"}) is None
+    assert db.exists({"sha256": SHA256})
+    # a record_type hint narrows the probe to that model's table
+    record = db.get({"sha1": SHA1}, record_type="file")
+    assert isinstance(record, File)
+    with pytest.raises(ValueError, match="not a queryable field on file"):
+        db.get({"name": "Jun"}, record_type="file")
+
+
+def test_get_mapping_probe_with_unknown_type(db):
+    with pytest.raises(ValueError, match="unknown record type"):
+        db.get({"type": "bogus"})
+    with pytest.raises(ValueError, match="does not match"):
+        db.get({"type": "person"}, record_type="text")
+
+
+def test_get_and_exists_reject_bad_by_fields(db):
+    db.put(Person(id="p1", name="Jun"))
+    with pytest.raises(ValueError, match="not a queryable field on person"):
+        db.get("p1", record_type="person", by="sha1")
+    with pytest.raises(ValueError, match="not a queryable field on person"):
+        db.exists(Person(name="Jun"), by="extra")
+    with pytest.raises(ValueError, match="no stored record type has a queryable field"):
+        db.get("p1", by="bogus")
+    with pytest.raises(ValueError, match="no stored record type has a queryable field"):
+        db.exists({"bogus": "x"})
+
+
+def test_get_probes_skip_empty_fields(db):
+    db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    record = db.get(File(sha256="", sha1=SHA1))  # sha256 skipped, sha1 matches
+    assert isinstance(record, File)
+    assert record.id == ID
+    assert db.get(File(sha256="", sha1="", md5="")) is None
+
+
+def test_get_probes_stored_models_in_order_until_first_match(db):
+    db.put(Text(id="t1", title="x"))
+    db.put(Person(id="p1", name="Jun"))
+
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        assert db.get("p1") is not None
+    finally:
+        db.conn.set_trace_callback(None)
+    # texts is probed first and misses, persons hits; nothing after the hit
+    assert len(statements) == 2
+
+
+def test_get_short_circuits_on_the_id_probe(db):
+    db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        record = db.get(File(id=ID, sha256=SHA256, sha1=SHA1, md5=MD5))
+    finally:
+        db.conn.set_trace_callback(None)
+    assert isinstance(record, File)
+    # the id probe hit: sha256/sha1/md5 probes never ran
+    assert len(statements) == 1
+    assert 'WHERE "id" = ' in statements[0]
+
+
+def test_get_mapping_probe_rejects_mapping_values(db):
+    db.put(Person(id="p1", name="Jun"))
+    with pytest.raises(ValueError, match="not a filter value"):
+        db.get({"type": "person", "identifiers": {"wikidata:Q42": 1}})
+
+
+def test_get_by_scalar_int_field(db):
+    db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
+
+    assert db.exists(File(id="", size=3), by="size")
+    record = db.get(File(id="", size=3), by="size")
+    assert isinstance(record, File)
+    assert record.id == ID
+
+
+def test_put_file_with_missing_id_fails_the_check(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.put({"type": "file", "size": 3})
 
 
 def test_delete_removes_rows_and_links(db):
@@ -175,6 +438,20 @@ def test_validate_reports_orphans_and_duplicates(tmp_path):
     assert "text_authors.text_id 'gone' does not exist" in issues
     assert "duplicate record id 't1' in 'texts' and 'persons'" in issues
     assert "duplicate identifier 'wikidata:Q42' in 'persons'" in issues
+
+
+def test_validate_reports_duplicate_sha256_but_not_sha1_or_md5(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path) as meta:
+        meta.put(File(id=ID, size=1, sha256=SHA256))
+        meta.put(File(id=f"sha256:{'d' * 64}", size=1, sha256=SHA256, sha1=SHA1))
+        meta.put(File(id=f"sha256:{'e' * 64}", size=1, sha1=SHA1, md5=MD5))
+
+        issues = meta.validate()
+
+    assert f"duplicate sha256 '{SHA256}' in 'files'" in issues
+    assert not any("sha1" in issue for issue in issues)
+    assert not any("md5" in issue for issue in issues)
 
 
 def test_context_exit_rolls_back_on_error(tmp_path):
@@ -215,7 +492,23 @@ def test_migrations_create_expected_indexes(tmp_path):
             for row in meta.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
         }
 
-    assert {"files_created", "persons_created", "texts_created", "software_created"} <= indexes
+    assert {
+        "files_created",
+        "persons_created",
+        "texts_created",
+        "software_created",
+        "files_sha256",
+        "files_sha1",
+        "files_md5",
+    } <= indexes
+
+
+def test_files_table_has_hash_columns(tmp_path):
+    path = tmp_path / "records.db"
+    with MetaDB(path) as meta:
+        columns = {row[1] for row in meta.conn.execute("PRAGMA table_info(files)")}
+
+    assert {"sha256", "sha1", "md5"} <= columns
 
 
 def test_path_defaults_to_config(tmp_path, monkeypatch):
@@ -235,10 +528,16 @@ def test_file_id_must_be_content_addressed(db):
 
 
 def test_put_accepts_hash_id(db):
-    stored = db.put(File(id=ID, size=3, identifiers=[ID, "sha1:b", "md5:c"]))
+    stored = db.put(File(id=ID, size=3, sha256=SHA256, sha1=SHA1, md5=MD5))
 
     assert stored.slug == ID
-    assert db.get(ID) == stored
+    record = db.get(ID)
+    assert isinstance(record, File)
+    assert record == stored
+    assert record.sha256 == SHA256
+    assert record.sha1 == SHA1
+    assert record.md5 == MD5
+    assert record.identifiers == []
 
 
 def test_dump_load_round_trip(tmp_path):
@@ -302,12 +601,13 @@ def test_find_sort_works_across_types(db):
     assert [r.id for r in db.find(sort="-id")] == ["t1", "p1"]
 
 
-def test_find_sort_with_identifier_filter(db):
+def test_find_sort_with_where_filter(db):
     db.put(Person(id="p1", name="A", identifiers=["wikidata:Q1"]))
     db.put(Person(id="p2", name="B", identifiers=["wikidata:Q2"]))
 
     assert [
-        r.id for r in db.find(Person, sort="id", identifier=["wikidata:Q1", "wikidata:Q2"])
+        r.id
+        for r in db.find(Person, sort="id", where={"identifiers": ["wikidata:Q1", "wikidata:Q2"]})
     ] == [
         "p1",
         "p2",
@@ -509,3 +809,36 @@ def test_migrate_with_missing_directory_returns_empty(tmp_path):
     path = tmp_path / "records.db"
     with MetaDB(path) as db:
         assert db.migrate(tmp_path / "no-such-dir") == []
+
+
+# --- model layout: unique / array_fields -------------------------------------
+
+
+def test_model_derives_unique_and_array_fields():
+    assert Person.unique == ("id", "slug", "identifiers")
+    assert File.unique == ("id", "slug", "sha256", "sha1", "md5")
+    assert "identifiers" in Person.array_fields
+    assert "occupations" in Person.array_fields
+    assert "extra" in Person.json_fields
+    assert "extra" not in Person.array_fields
+    assert File.array_fields == ("identifiers", "locations")
+    assert File.scalar_fields == ("size", "sha256", "sha1", "md5")
+
+
+def test_record_model_rejects_unqueryable_unique():
+    with pytest.raises(ValueError, match="is not queryable"):
+
+        @record_model
+        class BadUnique(Record):
+            unique: ClassVar[tuple[str, ...]] = ("extra",)
+
+    with pytest.raises(ValueError, match="is not queryable"):
+
+        @record_model
+        class MissingUnique(Record):
+            unique: ClassVar[tuple[str, ...]] = ("nope",)
+
+
+def test_file_probe_instances_get_empty_ids():
+    assert File().id == ""
+    assert File(sha1=SHA1).id == ""

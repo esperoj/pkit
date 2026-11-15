@@ -62,14 +62,25 @@ def record_model(cls):
     """Freeze the class, derive its column layout, register its type.
 
     list/dict defaults -> JSON text columns, link keys -> own table, rest -> scalar.
-    The type name is resolved by type_name(); see its docstring for why the
-    field default is read instead of cls.type.
+    array_fields splits the JSON columns into lists (queryable through
+    json_each) and dicts (extra, not queryable). unique names the fields
+    get()/exists() probe by default; every name must be queryable, so a bad
+    one fails at class definition time. The type name is resolved by
+    type_name(); see its docstring for why the field default is read instead
+    of cls.type.
     """
     cls = dataclass(cls, frozen=True, slots=True, kw_only=True)
     skip = {"id", "type", "slug"} | {link.key for link in cls.links}
     fs = [f for f in fields(cls) if f.name not in skip]
     cls.json_fields = tuple(f.name for f in fs if f.default_factory in (list, dict))
+    cls.array_fields = tuple(f.name for f in fs if f.default_factory is list)
     cls.scalar_fields = tuple(f.name for f in fs if f.name not in cls.json_fields)
+    queryable = {"id", "slug", *cls.scalar_fields, *cls.array_fields} | {
+        link.key for link in cls.links
+    }
+    for name in cls.unique:
+        if name not in queryable:
+            raise ValueError(f"unique field {name!r} on {cls.__name__} is not queryable")
     name = type_name(cls)
     if name:
         RECORD_TYPES[name] = cls
@@ -84,6 +95,8 @@ class Record:
     links: ClassVar[tuple[Link, ...]] = ()
     scalar_fields: ClassVar[tuple[str, ...]] = ()
     json_fields: ClassVar[tuple[str, ...]] = ()
+    array_fields: ClassVar[tuple[str, ...]] = ()
+    unique: ClassVar[tuple[str, ...]] = ("id", "slug", "identifiers")
 
     id: str = field(default_factory=new_id)
     type: str = ""
@@ -147,13 +160,20 @@ class File(Record):
     """One content-addressed file.
 
     id is "sha256:<hex>" so re-adding the same bytes is the same row across
-    machines. identifiers carry all content hashes ("sha256:...", "sha1:...",
-    "md5:...") so every record type stores all lookup tokens uniformly.
-    locations are remote copies only — local presence lives in the filesystem.
+    machines. sha256, sha1 and md5 live in dedicated indexed columns on
+    files; identifiers carries external IDs only. id defaults to "" so a
+    probe instance (File(sha1=...)) never mints a random UUID — put()
+    still enforces the id shape through the table's CHECK. locations are
+    remote copies only — local presence lives in the filesystem.
     """
 
     type: Literal["file"] = "file"
     table: ClassVar[str] = "files"
+    unique: ClassVar[tuple[str, ...]] = ("id", "slug", "sha256", "sha1", "md5")
 
+    id: str = ""
     size: int = 0
+    sha256: str = ""
+    sha1: str = ""
+    md5: str = ""
     locations: list[str] = field(default_factory=list)

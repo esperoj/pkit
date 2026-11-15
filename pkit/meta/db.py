@@ -48,6 +48,117 @@ def _q(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _resolve_type(record_type: str | type[Record] | None) -> type[Record] | None:
+    """A type name or Record class to its registered class, validated."""
+    if isinstance(record_type, type):
+        if not issubclass(record_type, Record):
+            raise TypeError(f"not a Record class: {record_type!r}")
+        record_type = type_name(record_type)
+    if record_type is None:
+        return None
+    if record_type not in RECORD_TYPES:
+        known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
+        raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
+    return RECORD_TYPES[record_type]
+
+
+def _check_model(cls: type[Record], record_type: str | type[Record] | None) -> None:
+    """Raise when an explicit record_type disagrees with a resolved model."""
+    hint = _resolve_type(record_type)
+    if hint is not None and hint is not cls:
+        raise ValueError(f"record type {type_name(hint)!r} does not match {type_name(cls)!r}")
+
+
+def _field_kind(cls: type[Record], name: str) -> str | None:
+    """How one field is queried: "scalar", "array" (JSON list), "link", or None.
+
+    id and slug are plain columns; dict JSON fields (extra) and unknown
+    names are not queryable.
+    """
+    if name in ("id", "slug") or name in cls.scalar_fields:
+        return "scalar"
+    if name in cls.array_fields:
+        return "array"
+    if name in {link.key for link in cls.links}:
+        return "link"
+    return None
+
+
+def _placeholders(items: list[Any]) -> str:
+    return ", ".join("?" * len(items))
+
+
+def _condition(cls: type[Record], name: str, items: list[Any]) -> str:
+    """SQL condition matching one field against materialized items."""
+    table = _q(cls.table)
+    kind = _field_kind(cls, name)
+    if kind == "scalar":
+        column = _q(name)
+        return f"{column} = ?" if len(items) == 1 else f"{column} IN ({_placeholders(items)})"
+    if kind == "array":
+        column = _q(name)
+        return (
+            f"EXISTS (SELECT 1 FROM json_each({table}.{column}) AS _e "
+            f"WHERE _e.value IN ({_placeholders(items)}))"
+        )
+    link = next(link for link in cls.links if link.key == name)
+    return (
+        f"EXISTS (SELECT 1 FROM {_q(link.table)} "
+        f"WHERE {_q(link.parent_column)} = {table}.id "
+        f"AND {_q(link.child_column)} IN ({_placeholders(items)}))"
+    )
+
+
+def _flatten(value: Any) -> list[Any]:
+    """Materialized filter items for one where value.
+
+    A single value stays a one-item list; a collection keeps its order minus
+    duplicates. None and mappings are rejected: they are never filter values.
+    """
+    if value is None or isinstance(value, Mapping):
+        raise ValueError(f"not a filter value: {value!r}")
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        return [value]
+    return list(dict.fromkeys(value))
+
+
+def _probe_items(value: Any) -> list[Any] | None:
+    """Materialized probe items, or None when the value is empty (skip)."""
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        return [value] if value else None
+    if isinstance(value, Iterable) and not isinstance(value, Mapping):
+        items = list(dict.fromkeys(value))
+        return items or None
+    if not isinstance(value, Mapping):
+        return [value]
+    raise ValueError(f"not a filter value: {value!r}")
+
+
+def _by_fields(by: str | Iterable[str] | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    if by is None:
+        return default
+    if isinstance(by, str):
+        return (by,)
+    return tuple(by)
+
+
+def _probe_model(
+    data: Mapping[str, Any], record_type: str | type[Record] | None
+) -> type[Record] | None:
+    """The model named by a mapping probe's "type", or the record_type hint."""
+    name = data.get("type")
+    if name is None:
+        return _resolve_type(record_type)
+    if not isinstance(name, str) or name not in RECORD_TYPES:
+        known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
+        raise ValueError(f"unknown record type {name!r}; known types: {known}")
+    cls = RECORD_TYPES[name]
+    _check_model(cls, record_type)
+    return cls
+
+
 def _prepare(record: Record | Mapping[str, Any]) -> Record:
     """Coerce a mapping or Record and ensure non-empty id and slug."""
     parsed = record if isinstance(record, Record) else from_dict(dict(record))
@@ -254,85 +365,173 @@ class MetaDB:
         ).fetchone()
         return from_json(row["payload"]) if row is not None else self.put(record)
 
-    def get(self, record_id: str) -> Record | None:
-        """Fetch one record by id across all known types."""
-        for cls in stored_models():
-            row = self.conn.execute(
-                f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
-                (record_id,),
-            ).fetchone()
-            if row is not None:
-                return from_json(row["payload"])
+    def _lookup(
+        self,
+        target: str | Record | Mapping[str, Any],
+        *,
+        record_type: str | type[Record] | None = None,
+        by: str | Iterable[str] | None = None,
+        payload: bool = False,
+    ) -> sqlite3.Row | None:
+        """First row matching any non-empty probe field, or None.
+
+        One LIMIT 1 query per field (and per candidate model when no model is
+        pinned), so indexed columns and json_each scans never share one OR
+        clause. Empty values are skipped; the first hit wins.
+        """
+        if isinstance(target, Record):
+            cls = type(target)
+            _check_model(cls, record_type)
+            fields = _by_fields(by, cls.unique)
+            values: dict[str, Any] = {name: getattr(target, name) for name in fields}
+        elif isinstance(target, Mapping):
+            data = dict(target)
+            cls = _probe_model(data, record_type)
+            # typed probes match on the model's unique fields; untyped ones
+            # probe their own keys against the hinted (or all stored) models
+            if cls is not None and "type" in data:
+                default_fields = cls.unique
+            else:
+                default_fields = tuple(data.keys())
+            fields = _by_fields(by, default_fields)
+            values = {name: data.get(name) for name in fields}
+        else:
+            if not target:
+                return None
+            cls = _resolve_type(record_type)
+            fields = _by_fields(by, ("id",))
+            values = {name: target for name in fields}
+
+        if cls is not None:
+            for name in fields:
+                if _field_kind(cls, name) is None:
+                    raise ValueError(f"not a queryable field on {type_name(cls)}: {name!r}")
+        else:
+            for name in fields:
+                if not any(_field_kind(model, name) is not None for model in stored_models()):
+                    raise ValueError(f"no stored record type has a queryable field {name!r}")
+
+        for name in fields:
+            items = _probe_items(values[name])
+            if items is None:
+                continue
+            models = (
+                (cls,)
+                if cls is not None
+                else tuple(
+                    model for model in stored_models() if _field_kind(model, name) is not None
+                )
+            )
+            for model in models:
+                expression = f"{_payload_sql(model)} AS payload" if payload else "1"
+                row = self.conn.execute(
+                    f"SELECT {expression} FROM {_q(model.table)} "
+                    f"WHERE {_condition(model, name, items)} LIMIT 1",
+                    items,
+                ).fetchone()
+                if row is not None:
+                    return row
         return None
+
+    def exists(
+        self,
+        target: str | Record | Mapping[str, Any],
+        *,
+        record_type: str | type[Record] | None = None,
+        by: str | Iterable[str] | None = None,
+    ) -> bool:
+        """Cheap presence check: no payload build, no JSON parse.
+
+        A str is probed by id unless by names other fields; Record and
+        mapping probes use their model's unique fields, skipping empty ones.
+        """
+        return self._lookup(target, record_type=record_type, by=by) is not None
+
+    def get(
+        self,
+        target: str | Record | Mapping[str, Any],
+        *,
+        record_type: str | type[Record] | None = None,
+        by: str | Iterable[str] | None = None,
+    ) -> Record | None:
+        """Fetch one record by probe, or None.
+
+        Matching follows exists(): a str is probed by id unless by names
+        other fields, Record and mapping probes use their model's unique
+        fields (empty values skipped). Probing a mapping with "id": ""
+        instead of a random UUID is the safe way to match on the other
+        fields only.
+        """
+        row = self._lookup(target, record_type=record_type, by=by, payload=True)
+        return from_json(row["payload"]) if row is not None else None
 
     def find(
         self,
         record_type: str | type[Record] | None = None,
         *,
-        identifier: str | Iterable[str] | None = None,
+        where: Mapping[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
         sort: str = "-updated",
     ) -> list[Record]:
         """All records of a type (or all types), newest first by default.
 
-        record_type accepts a type name ("note") or the class (Note).
-        identifier filters to records matching a token (or any token in an
-        iterable). sort picks the order: "id", "-id", "created", "-created",
-        "updated" or "-updated" (default); timestamp sorts tie-break on id.
-        Unknown types and sorts raise ValueError listing the known values.
+        record_type accepts a type name ("text") or the class (Text). where
+        ANDs field filters: scalar fields compare by equality (a collection
+        becomes IN), array fields (identifiers, genres, ...) match by
+        membership, and link fields (author_ids) match through the link
+        table; an empty collection matches nothing. With record_type None,
+        only stored models carrying every where key are searched. sort picks
+        the order: "id", "-id", "created", "-created", "updated" or
+        "-updated" (default); timestamp sorts tie-break on id. Unknown
+        types, sorts and where fields raise ValueError listing known values.
         """
         if sort not in _SORTS:
             known = ", ".join(_SORTS)
             raise ValueError(f"unknown sort {sort!r}; known sorts: {known}")
-        if isinstance(record_type, type):
-            if not issubclass(record_type, Record):
-                raise TypeError(f"not a Record class: {record_type!r}")
-            record_type = type_name(record_type)
-        if record_type is not None and record_type not in RECORD_TYPES:
-            known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
-            raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
-        models = (RECORD_TYPES[record_type],) if record_type is not None else stored_models()
-        models = tuple(cls for cls in models if cls.table)
+        cls = _resolve_type(record_type)
+        models = (cls,) if cls is not None else stored_models()
+        models = tuple(model for model in models if model.table)
         if not models:
             return []
-        per_select: tuple[str, ...] = ()
-        if identifier is not None:
-            raw: Iterable[str] = (identifier,) if isinstance(identifier, str) else identifier
-            per_select = tuple(dict.fromkeys(tok for tok in raw if tok))
-            if not per_select:
-                return []
-        placeholders = ", ".join("?" * len(per_select)) if per_select else ""
+        filters: dict[str, list[Any]] = {}
+        if where:
+            for name in where:
+                if cls is not None:
+                    if _field_kind(cls, name) is None:
+                        raise ValueError(f"not a queryable field on {type_name(cls)}: {name!r}")
+                elif not any(_field_kind(model, name) is not None for model in models):
+                    raise ValueError(f"no stored record type has a queryable field {name!r}")
+            for name, value in where.items():
+                items = _flatten(value)
+                if not items:
+                    return []
+                filters[name] = items
+            if cls is None:
+                models = tuple(
+                    model
+                    for model in models
+                    if all(_field_kind(model, name) is not None for name in filters)
+                )
+                if not models:
+                    return []
         selects: list[str] = []
-        for cls in models:
-            table = _q(cls.table)
-            where = (
-                f" WHERE EXISTS (SELECT 1 FROM json_each({table}.identifiers) AS _id "
-                f"WHERE _id.value IN ({placeholders}))"
-                if placeholders
-                else ""
-            )
-            payload = _payload_sql(cls)
+        params: list[Any] = []
+        for model in models:
+            table = _q(model.table)
+            clauses = [_condition(model, name, items) for name, items in filters.items()]
+            where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            payload = _payload_sql(model)
             selects.append(
-                f"SELECT {payload} AS payload, id, created_at, updated_at FROM {table}{where}"
+                f"SELECT {payload} AS payload, id, created_at, updated_at FROM {table}{where_sql}"
             )
+            params.extend(item for items in filters.values() for item in items)
         union = " UNION ALL ".join(selects)
         sql = f"SELECT payload FROM ({union}) ORDER BY {_SORTS[sort]}"
-        params: list[Any] = list(per_select) * len(models)
         if limit is not None or offset:
             sql += " LIMIT ? OFFSET ?"
             params.extend([limit if limit is not None else -1, offset])
         return [from_json(row["payload"]) for row in self.conn.execute(sql, params)]
-
-    def exists(self, record_id: str) -> bool:
-        """Cheap presence check: no payload build, no JSON parse."""
-        for cls in stored_models():
-            row = self.conn.execute(
-                f"SELECT 1 FROM {_q(cls.table)} WHERE id = ? LIMIT 1", (record_id,)
-            ).fetchone()
-            if row is not None:
-                return True
-        return False
 
     def delete(self, record_id: str) -> bool:
         """Hard-delete, plus every link row referencing the id."""
@@ -349,7 +548,7 @@ class MetaDB:
         return found
 
     def validate(self) -> list[str]:
-        """Orphan link parents/children, duplicate ids, and duplicate identifiers."""
+        """Orphan links, duplicate ids, duplicate identifiers, duplicate sha256s."""
         issues: list[str] = []
         models = stored_models()
         for cls in models:
@@ -379,4 +578,8 @@ class MetaDB:
                 f"GROUP BY _id.value HAVING count(DISTINCT {table}.id) > 1"
             )
             issues.extend(f"duplicate identifier {row[0]!r} in {cls.table!r}" for row in rows)
+        rows = self.conn.execute(
+            "SELECT sha256 FROM files WHERE sha256 <> '' GROUP BY sha256 HAVING count(*) > 1"
+        )
+        issues.extend(f"duplicate sha256 {row[0]!r} in 'files'" for row in rows)
         return issues

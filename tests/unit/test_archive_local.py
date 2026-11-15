@@ -4,10 +4,10 @@ import pytest
 
 from pkit import archive
 from pkit.archive.cas import Hashes, cas_path, hash_file
-from pkit.archive.db import hashes_of
+from pkit.archive.db import ArchiveDB, hashes_of
 from pkit.archive.errors import ArchiveError, InputError
 from pkit.meta.db import MetaDB
-from pkit.meta.models import File
+from pkit.meta.models import File, Person
 
 PAYLOAD = b"pandora"
 
@@ -29,22 +29,67 @@ def test_add_moves_content_and_links(repo, db_path):
         record = meta.get(hashes.record_id)
     assert isinstance(record, File)
     assert record.size == 7
-    assert hashes.record_id in record.identifiers
-    assert f"sha1:{hashes.sha1}" in record.identifiers
-    assert f"md5:{hashes.md5}" in record.identifiers
+    assert record.sha256 == hashes.sha256
+    assert record.sha1 == hashes.sha1
+    assert record.md5 == hashes.md5
+    assert record.identifiers == []
     assert record.locations == []
 
 
-def test_hashes_of_reads_identifiers_and_falls_back_to_id():
+def test_hashes_of_reads_columns_and_falls_back_to_id():
     sha256 = "a" * 64
-    full = File(
-        id=f"sha256:{sha256}",
-        identifiers=[f"md5:{'c' * 32}", f"sha1:{'b' * 40}", f"sha256:{sha256}"],
-    )
-    legacy = File(id=f"sha256:{sha256}", identifiers=[f"sha1:{'b' * 40}"])
+    full = File(id=f"sha256:{sha256}", sha256=sha256, sha1="b" * 40, md5="c" * 32)
+    legacy = File(id=f"sha256:{sha256}")  # columns empty: id is the fallback
 
     assert hashes_of(full) == Hashes(sha256=sha256, sha1="b" * 40, md5="c" * 32)
-    assert hashes_of(legacy) == Hashes(sha256=sha256, sha1="b" * 40)
+    assert hashes_of(legacy) == Hashes(sha256=sha256)
+
+
+def test_hash_index_maps_all_hash_columns(repo, db_path):
+    tree = repo / "manga"
+    archive.add(tree, db_path=db_path)
+    hashes = hash_file(tree / "v1.cbz")
+
+    with ArchiveDB(db_path) as db:
+        index = db.hash_index()
+
+    assert index == {
+        f"sha256:{hashes.sha256}": hashes.record_id,
+        f"sha1:{hashes.sha1}": hashes.record_id,
+        f"md5:{hashes.md5}": hashes.record_id,
+    }
+
+
+def test_file_record_upgrades_legacy_hash_tokens(db_path):
+    sha256 = "a" * 64
+    with ArchiveDB(db_path) as db:
+        db.put(File(id=f"sha256:{sha256}", identifiers=[f"sha256:{sha256}", "sha1:b", "md5:c"]))
+        upgraded = db.file_record(Hashes(sha256=sha256, sha1="b" * 40, md5="c" * 32), 7)
+        again = db.file_record(Hashes(sha256=sha256, sha1="b" * 40, md5="c" * 32), 0)
+
+    assert upgraded.id == f"sha256:{sha256}"
+    assert upgraded.identifiers == []  # hash tokens moved out of identifiers
+    assert upgraded.sha256 == sha256
+    assert upgraded.sha1 == "b" * 40
+    assert upgraded.md5 == "c" * 32
+    assert upgraded.size == 7
+    assert again == upgraded  # the second call is a no-op
+
+
+def test_load_file_rejects_non_file_record(db_path):
+    record_id = "sha256:" + "a" * 64
+    with MetaDB(db_path) as meta:
+        meta.put(Person(id=record_id, name="not a file"))
+
+    with ArchiveDB(db_path) as db, pytest.raises(InputError, match="is not a file record"):
+        db.load_file(record_id)
+
+
+def test_hash_index_skips_empty_hash_columns(db_path):
+    with ArchiveDB(db_path) as db:
+        db.put(File(id="sha256:" + "a" * 64))
+
+        assert db.hash_index() == {}
 
 
 def test_add_is_idempotent_and_dedupes(repo, db_path):
@@ -59,6 +104,24 @@ def test_add_is_idempotent_and_dedupes(repo, db_path):
     cas = repo / ".git" / "pkit-archive"
     objects = [item for item in cas.rglob("*") if item.is_file()]
     assert objects == [cas_path(cas, hash_file(tree / "v1.cbz").sha256)]
+
+
+def test_add_skips_rehash_of_registered_symlinks(repo, db_path, monkeypatch):
+    tree = repo / "manga"
+    archive.add(tree, db_path=db_path)
+    calls: list[str] = []
+    real_hash_file = hash_file
+
+    def traced_hash_file(path):
+        calls.append(str(path))
+        return real_hash_file(path)
+
+    monkeypatch.setattr("pkit.archive.hash_file", traced_hash_file)
+
+    result = archive.add(tree, db_path=db_path)
+
+    assert result == archive.AddResult(added=0, relinked=0, skipped=0)
+    assert calls == []  # a fully recorded object is never re-hashed
 
 
 def test_add_skips_foreign_symlinks(repo, db_path):

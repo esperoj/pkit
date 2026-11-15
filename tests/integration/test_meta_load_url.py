@@ -128,9 +128,8 @@ def test_load_imports_wikidata_person_with_uuid_and_identifier(wikidata, db_path
     assert count == 1
     with MetaDB(db_path) as meta:
         assert meta.get("wikidata:Q42") is None
-        matches = meta.find(Person, identifier="wikidata:Q42")
-    assert len(matches) == 1
-    record = matches[0]
+        record = meta.get("wikidata:Q42", by="identifiers")
+    assert record is not None
     assert isinstance(record, Person)
     assert uuid.UUID(record.id).version == 4
     assert "wikidata:Q42" in record.identifiers
@@ -152,7 +151,8 @@ def test_load_skips_existing_unless_refresh(wikidata, db_path):
     assert load.load("https://www.wikidata.org/wiki/Q42", db_path=db_path) == 1
     assert len(wikidata.requests) == 1
     with MetaDB(db_path) as meta:
-        first = meta.find(Person, identifier="wikidata:Q42")[0]
+        first = meta.get("wikidata:Q42", by="identifiers")
+        assert first is not None
 
     # Second load skips network and preserves the existing record.
     assert load.load("wikidata:Q42", db_path=db_path) == 0
@@ -162,7 +162,7 @@ def test_load_skips_existing_unless_refresh(wikidata, db_path):
     assert load.load("wikidata:Q42", db_path=db_path, refresh=True) == 1
     assert len(wikidata.requests) == 2
     with MetaDB(db_path) as meta:
-        rows = meta.find(Person, identifier="wikidata:Q42")
+        rows = meta.find(Person, where={"identifiers": "wikidata:Q42"})
     assert len(rows) == 1
     assert rows[0].id == first.id
     assert isinstance(rows[0], Person)
@@ -178,8 +178,8 @@ def test_load_text_skips_already_imported_author(wikidata, db_path):
     assert len(wikidata.requests) == 2  # Q42 was not fetched a second time
 
     with MetaDB(db_path) as meta:
-        author = meta.find(Person, identifier="wikidata:Q42")[0]
-        text = meta.find(Text, identifier="wikidata:Q187655")[0]
+        author = meta.find(Person, where={"identifiers": "wikidata:Q42"})[0]
+        text = meta.find(Text, where={"identifiers": "wikidata:Q187655"})[0]
     assert isinstance(text, Text)
     assert text.kind == "novel"
     assert text.author_ids == [author.id]
@@ -208,7 +208,7 @@ def test_load_imports_wikidata_game_without_child_records(wikidata, db_path):
 
     with MetaDB(db_path) as meta:
         assert meta.find(Person) == []
-        matches = meta.find(Software, identifier="wikidata:Q82050")
+        matches = meta.find(Software, where={"identifiers": "wikidata:Q82050"})
     assert len(matches) == 1
     game = matches[0]
     assert isinstance(game, Software)
@@ -252,8 +252,8 @@ def test_load_imports_wikidata_software_and_prefers_game_over_text(wikidata, db_
     assert load.load("wikidata:Q5678", db_path=db_path) == 1
 
     with MetaDB(db_path) as meta:
-        sw = meta.find(Software, identifier="wikidata:Q1234")[0]
-        vn_rec = meta.find(Software, identifier="wikidata:Q5678")[0]
+        sw = meta.find(Software, where={"identifiers": "wikidata:Q1234"})[0]
+        vn_rec = meta.find(Software, where={"identifiers": "wikidata:Q5678"})[0]
         assert meta.find(Text) == []
     assert isinstance(sw, Software)
     assert sw.kind == "software"
@@ -284,7 +284,7 @@ def test_load_skips_redirect_to_existing_record(wikidata, db_path):
     assert load.load("wikidata:Q42", db_path=db_path) == 1
     assert load.load("wikidata:Q99", db_path=db_path) == 0
     with MetaDB(db_path) as meta:
-        person = meta.find(Person, identifier="wikidata:Q42")[0]
+        person = meta.get("wikidata:Q42", by="identifiers")
     assert isinstance(person, Person)
     assert person.name == "Douglas Adams"
 
@@ -377,8 +377,8 @@ def test_auto_chinese_work_uses_simplified_main_and_english_taxonomy(wikidata, d
     assert load.load("wikidata:Q1001", db_path=db_path) == 2
 
     with MetaDB(db_path) as meta:
-        text = meta.find(Text, identifier="wikidata:Q1001")[0]
-        person = meta.find(Person, identifier="wikidata:Q2003")[0]
+        text = meta.find(Text, where={"identifiers": "wikidata:Q1001"})[0]
+        person = meta.find(Person, where={"identifiers": "wikidata:Q2003"})[0]
 
     assert isinstance(text, Text)
     assert text.title == "三体"
@@ -431,8 +431,8 @@ def test_auto_vietnamese_work_and_person_p1559_fallback(wikidata, db_path):
     assert load.load("wikidata:Q3001", db_path=db_path) == 2
 
     with MetaDB(db_path) as meta:
-        text = meta.find(Text, identifier="wikidata:Q3001")[0]
-        person = meta.find(Person, identifier="wikidata:Q3002")[0]
+        text = meta.find(Text, where={"identifiers": "wikidata:Q3001"})[0]
+        person = meta.find(Person, where={"identifiers": "wikidata:Q3002"})[0]
 
     assert isinstance(text, Text)
     assert text.title == "Số đỏ"
@@ -472,7 +472,7 @@ def test_auto_other_original_language_keeps_at_most_four_langs_in_extra(wikidata
     assert load.load("wikidata:Q4001", db_path=db_path) == 1
 
     with MetaDB(db_path) as meta:
-        text = meta.find(Text, identifier="wikidata:Q4001")[0]
+        text = meta.find(Text, where={"identifiers": "wikidata:Q4001"})[0]
 
     assert isinstance(text, Text)
     assert text.title == "Pandora Hearts"
@@ -503,7 +503,7 @@ def test_auto_resolves_unknown_language_qid_via_p424(wikidata, db_path):
     assert len(wikidata.requests) == 2  # Q9056 label cached alongside P424
 
     with MetaDB(db_path) as meta:
-        text = meta.find(Text, identifier="wikidata:Q4501")[0]
+        text = meta.find(Text, where={"identifiers": "wikidata:Q4501"})[0]
 
     assert isinstance(text, Text)
     assert text.lang == "Czech"
@@ -552,7 +552,7 @@ def test_explicit_lang_overrides_auto_and_config(run_cli, wikidata, db_path, tmp
     assert out.strip() == "1"
 
     with MetaDB(db_path) as meta:
-        record = meta.find(Software, identifier="wikidata:Q5001")[0]
+        record = meta.find(Software, where={"identifiers": "wikidata:Q5001"})[0]
     assert isinstance(record, Software)
     assert record.title == "示例软件"
     assert record.developers == ["甲公司"]
@@ -580,7 +580,7 @@ def test_refresh_merges_i18n_and_preserves_manual_edits(wikidata, db_path):
     assert load.load("wikidata:Q42", db_path=db_path, refresh=True) == 1
 
     with MetaDB(db_path) as meta:
-        person = meta.find(Person, identifier="wikidata:Q42")[0]
+        person = meta.find(Person, where={"identifiers": "wikidata:Q42"})[0]
 
     assert person.extra == {
         "notes": "custom",
@@ -604,7 +604,7 @@ def test_cli_load_refresh_flag(run_cli, wikidata, db_path):
     assert code == EXIT_OK, err
     assert out.strip() == "1"
     with MetaDB(db_path) as meta:
-        person = meta.find(Person, identifier="wikidata:Q42")[0]
+        person = meta.find(Person, where={"identifiers": "wikidata:Q42"})[0]
     assert isinstance(person, Person)
     assert person.name == "Updated"
 

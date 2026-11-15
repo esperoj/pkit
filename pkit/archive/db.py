@@ -3,7 +3,8 @@
 ArchiveDB extends MetaDB with archive's File-record operations, so pkit.meta.db
 and pkit.archive.db stay symmetric. Backends never see the DB. put() overwrites
 whole rows, so every write here is a read-merge-write to preserve previously
-recorded locations.
+recorded locations. Hash tokens ("sha256:<hex>") are archive's own convention:
+pkit.meta.db stays unaware of them, this module maps them to File's columns.
 """
 
 from collections.abc import Iterable
@@ -17,6 +18,8 @@ from pkit.meta.db import MetaDB
 from pkit.meta.models import File
 
 __all__ = ["ArchiveDB", "hashes_of"]
+
+HASH_TOKEN_PREFIXES = ("sha256:", "sha1:", "md5:")
 
 
 class ArchiveDB(MetaDB):
@@ -33,17 +36,33 @@ class ArchiveDB(MetaDB):
 
     def file_record(self, hashes: Hashes, size: int) -> File:
         """Create or merge the content row for these hashes."""
-        stored = self.get(hashes.record_id)
+        probe = File(id=hashes.record_id, sha256=hashes.sha256, sha1=hashes.sha1, md5=hashes.md5)
+        stored = self.get(probe)
         if stored is None:
-            created = File(id=hashes.record_id, size=size, identifiers=list(hashes.identifiers))
+            created = File(
+                id=hashes.record_id,
+                size=size,
+                sha256=hashes.sha256,
+                sha1=hashes.sha1,
+                md5=hashes.md5,
+            )
             return cast(File, self.put(created))
         if not isinstance(stored, File):
             raise InputError(f"{hashes.record_id} is not a file record")
-        identifiers = sorted(set(stored.identifiers) | set(hashes.identifiers))
-        new_size = stored.size or size
-        if identifiers == stored.identifiers and new_size == stored.size:
+        identifiers = [
+            token for token in stored.identifiers if not token.startswith(HASH_TOKEN_PREFIXES)
+        ]
+        merged = replace(
+            stored,
+            identifiers=identifiers,
+            sha256=hashes.sha256 or stored.sha256,
+            sha1=hashes.sha1 or stored.sha1,
+            md5=hashes.md5 or stored.md5,
+            size=stored.size or size,
+        )
+        if merged == stored:
             return stored
-        return cast(File, self.put(replace(stored, identifiers=identifiers, size=new_size)))
+        return cast(File, self.put(merged))
 
     def register(self, record_id: str, locations: Iterable[str]) -> File:
         """Record remote copies against known content."""
@@ -60,18 +79,19 @@ class ArchiveDB(MetaDB):
 
     def hash_index(self) -> dict[str, str]:
         """Every known hash token mapped to its record id (one pass, O(1) lookup)."""
-        return {token: record.id for record in self.find(File) for token in record.identifiers}
+        index: dict[str, str] = {}
+        for row in self.conn.execute("SELECT id, sha256, sha1, md5 FROM files"):
+            for algo in ("sha256", "sha1", "md5"):
+                value = row[algo]
+                if value:
+                    index[f"{algo}:{value}"] = row["id"]
+        return index
 
 
 def hashes_of(record: File) -> Hashes:
-    """Rebuild the hash set from the record's identifiers (falling back to id)."""
-    values = {"sha256": "", "sha1": "", "md5": ""}
-    for token in record.identifiers:
-        algo, _, value = token.partition(":")
-        if algo in values and value:
-            values[algo] = value
+    """Rebuild the hash set from the record's hash columns (id as fallback)."""
     return Hashes(
-        sha256=values["sha256"] or record.id.removeprefix("sha256:"),
-        sha1=values["sha1"],
-        md5=values["md5"],
+        sha256=record.sha256 or record.id.removeprefix("sha256:"),
+        sha1=record.sha1,
+        md5=record.md5,
     )

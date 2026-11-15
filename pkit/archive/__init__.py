@@ -168,7 +168,10 @@ def add(
                     skipped += 1
                     continue
                 stored = db.get(f"sha256:{named}")
-                if not isinstance(stored, File) or not stored.identifiers:
+                stale = not isinstance(stored, File) or not (
+                    stored.sha256 and stored.sha1 and stored.md5
+                )
+                if stale:
                     db.file_record(hash_file(obj), obj.stat().st_size)
                     db.commit()
                 if make_link(item, obj):

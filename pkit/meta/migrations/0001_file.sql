@@ -3,6 +3,9 @@ CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY NOT NULL CHECK (id LIKE 'sha256:%'),
     slug TEXT NOT NULL CHECK (slug <> '') UNIQUE,
     size INTEGER NOT NULL DEFAULT 0 CHECK (size >= 0),
+    sha256 TEXT NOT NULL DEFAULT '',
+    sha1 TEXT NOT NULL DEFAULT '',
+    md5 TEXT NOT NULL DEFAULT '',
     identifiers TEXT NOT NULL DEFAULT '[]'
         CHECK (json_valid(identifiers) AND json_type(identifiers) = 'array'),
     extra TEXT NOT NULL DEFAULT '{}'
@@ -15,6 +18,16 @@ CREATE TABLE IF NOT EXISTS files (
 
 CREATE INDEX IF NOT EXISTS files_updated
     ON files(updated_at);
+
+-- Partial indexes: only rows that actually carry a hash are indexed.
+CREATE INDEX IF NOT EXISTS files_sha256
+    ON files(sha256) WHERE sha256 <> '';
+
+CREATE INDEX IF NOT EXISTS files_sha1
+    ON files(sha1) WHERE sha1 <> '';
+
+CREATE INDEX IF NOT EXISTS files_md5
+    ON files(md5) WHERE md5 <> '';
 
 CREATE TRIGGER IF NOT EXISTS files_touch_updated
 AFTER UPDATE ON files

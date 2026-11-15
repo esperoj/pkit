@@ -171,10 +171,10 @@ def _load_source(
             if key in visiting:
                 return provisional.get(key)
             if not refresh:
-                existing_rows = db.find(expected, identifier=f"{src.name}:{key}")
-                if existing_rows:
-                    resolved[key] = existing_rows[0].id
-                    return existing_rows[0].id
+                existing = db.get(f"{src.name}:{key}", record_type=expected, by="identifiers")
+                if existing is not None:
+                    resolved[key] = existing.id
+                    return existing.id
             visiting.add(key)
 
             item = src.fetch(key, expected=expected, lang=lang)
@@ -200,19 +200,25 @@ def _load_source(
                 visiting.discard(key)
                 return provisional.get(canon_key)
             if not refresh and canon_key != key:
-                existing_rows = db.find(plan.model, identifier=f"{src.name}:{canon_key}")
-                if existing_rows:
+                existing = db.get(
+                    f"{src.name}:{canon_key}", record_type=plan.model, by="identifiers"
+                )
+                if existing is not None:
                     visiting.discard(key)
-                    resolved[key] = existing_rows[0].id
-                    resolved[canon_key] = existing_rows[0].id
-                    return existing_rows[0].id
+                    resolved[key] = existing.id
+                    resolved[canon_key] = existing.id
+                    return existing.id
             visiting.add(canon_key)
 
             values = {name: extractor(item) for name, extractor in plan.fields.items()}
             canonical_id = f"{src.name}:{canon_key}"
             tokens = [canonical_id, *(values.get("identifiers") or ())]
-            matches = db.find(plan.model, identifier=tokens)
-            existing = matches[0] if matches else None
+            # A mapping probe: unique fields carry the values, everything
+            # else rides along; no id is minted, so deduplication keys on
+            # plan.model.unique (identifiers, or hashes for File).
+            probe = {"type": type_name(plan.model), **values, "identifiers": tokens}
+            probe.setdefault("id", "")
+            existing = db.get(probe)
             record_id = existing.id if existing is not None else new_id()
             provisional[key] = record_id
             provisional[canon_key] = record_id
