@@ -91,9 +91,7 @@ def emit_result(
     that should be printed to stdout.
     """
     if json_output:
-        payload = (
-            asdict(result) if is_dataclass(result) and not isinstance(result, type) else result
-        )
+        payload = asdict(result) if is_dataclass(result) else result
         print(json.dumps(payload, indent=2))
         return
 

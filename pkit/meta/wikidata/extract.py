@@ -20,7 +20,6 @@ __all__ = [
     "i18n_extra",
     "item_ids",
     "kind_of",
-    "label",
     "person_name",
     "work_title",
 ]
@@ -134,11 +133,11 @@ def _exact_from_layers(layers: Sequence[Mapping[str, str]], lang: str) -> str:
 def _pick_from_layers(
     layers: Sequence[Mapping[str, str]],
     *,
-    lang: str | None = None,
+    lang: str,
     fallback: bool = True,
     orig_lang: str = "",
 ) -> str:
-    if lang is not None and not fallback:
+    if not fallback:
         return _exact_from_layers(layers, lang)
     order: list[str] = []
     for cand in (lang, *PRIMARY_LANGS, orig_lang):
@@ -169,13 +168,10 @@ class EntityView:
     lang: str = "en"
     orig_lang: str = ""
 
-    def label(self, qid: str, *, lang: str | None = None, fallback: bool = True) -> str:
+    def label(self, qid: str, *, lang: str | None = None) -> str:
+        """One referenced item's label in lang (default: the view language)."""
         if qid in self.labels:
-            return _pick_from_layers(
-                (self.labels[qid],),
-                lang=lang or self.lang,
-                fallback=fallback,
-            )
+            return _pick_from_layers((self.labels[qid],), lang=lang or self.lang)
         if self.missing is not None:
             self.missing.add(qid)
         return ""
@@ -298,44 +294,35 @@ def _decode_value(
     return ""
 
 
-def label(lang: str | None = None) -> Callable[[EntityView], str]:
-    """Extract an entity's label, defaulting to the view language."""
-    return lambda view: _pick_from_layers(
-        (_text_map(view.raw.get("labels")),),
-        lang=lang or view.lang,
-        orig_lang=view.orig_lang,
-    )
-
-
-def description(lang: str | None = None) -> Callable[[EntityView], str]:
-    """Extract an entity's description, defaulting to the view language."""
+def description() -> Callable[[EntityView], str]:
+    """Extract an entity's description in the view language."""
     return lambda view: _pick_from_layers(
         (_text_map(view.raw.get("descriptions")),),
-        lang=lang or view.lang,
+        lang=view.lang,
         orig_lang=view.orig_lang,
     )
 
 
-def work_title(lang: str | None = None) -> Callable[[EntityView], str]:
+def work_title() -> Callable[[EntityView], str]:
     """Extract a work's title from P1476 and labels, respecting script priority."""
 
     def _extract(view: EntityView) -> str:
         return _pick_from_layers(
             (_monolingual_map(view.raw, "P1476"), _text_map(view.raw.get("labels"))),
-            lang=lang or view.lang,
+            lang=view.lang,
             orig_lang=view.orig_lang,
         )
 
     return _extract
 
 
-def person_name(lang: str | None = None) -> Callable[[EntityView], str]:
+def person_name() -> Callable[[EntityView], str]:
     """Extract a person's name from labels and P1559 (name in native language)."""
 
     def _extract(view: EntityView) -> str:
         return _pick_from_layers(
             (_text_map(view.raw.get("labels")), _monolingual_map(view.raw, "P1559")),
-            lang=lang or view.lang,
+            lang=view.lang,
             orig_lang=view.orig_lang,
         )
 

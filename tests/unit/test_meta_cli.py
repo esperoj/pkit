@@ -195,7 +195,6 @@ def test_migrate_prints_applied_names(run_cli, db_path):
         "0004_software.sql",
         "0005_video.sql",
         "0006_sound.sql",
-        "0007_note.sql",
     ]
 
 

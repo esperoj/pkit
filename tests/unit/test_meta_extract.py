@@ -17,7 +17,6 @@ from pkit.meta.wikidata.extract import (
     has_class,
     item_ids,
     kind_of,
-    label,
     person_name,
     work_title,
 )
@@ -235,25 +234,25 @@ def test_ext_ids_skip_non_strings_and_duplicates():
 # --- label layers and language fallbacks ---------------------------------------
 
 
-def test_label_layers_skip_malformed_entries():
+def test_name_layers_skip_malformed_entries():
     raw = {"labels": {"en": "raw-string", "fr": {"value": ""}, "de": {"value": "ok"}}}
 
-    assert label("de")(view(raw)) == "ok"
+    assert person_name()(EntityView(raw, {}, lang="de")) == "ok"
 
 
-def test_label_falls_back_to_any_available_language():
+def test_name_falls_back_to_any_available_language():
     raw = {"labels": {"fr": {"value": "Seulement français"}}}
 
     assert person_name()(view(raw)) == "Seulement français"
 
 
-def test_label_matches_regional_language_tags():
+def test_name_matches_regional_language_tags():
     # language codes are lowercase on the wire (client normalizes requests)
     both = {"labels": {"fr": {"value": "français"}, "fr-ca": {"value": "canadien"}}}
     base_only = {"labels": {"fr": {"value": "français"}}}
 
-    assert label("fr-ca")(view(both)) == "canadien"
-    assert label("fr-ca")(view(base_only)) == "français"  # base tag fallback
+    assert person_name()(view(both, lang="fr-ca")) == "canadien"
+    assert person_name()(view(base_only, lang="fr-ca")) == "français"  # base tag fallback
 
 
 def test_label_of_uncached_qid():

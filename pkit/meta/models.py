@@ -8,7 +8,6 @@ __all__ = [
     "RECORD_TYPES",
     "File",
     "Link",
-    "Note",
     "Person",
     "Record",
     "Software",
@@ -227,29 +226,3 @@ class File(Record):
     sha1: str = ""
     md5: str = ""
     locations: list[str] = field(default_factory=list)
-
-
-@record_model
-class Note(Record):
-    """The personal layer: one annotation attached to any other record.
-
-    Reviews, progress, and activity logs are a single model, not one model
-    per reviewed type: kind picks the flavor ("review", "reading",
-    "play", ...), subject_ids points at cataloged records of any type, and
-    rating / start_date / end_date / duration carry the personal numbers.
-    Dates are ISO (YYYY[-MM[-DD]]); duration is seconds. subject_ids is a
-    plain array field, so notes about anything are queried the same way:
-    db.find(Note, where={"subject_ids": book_id}).
-    """
-
-    type: Literal["note"] = "note"
-    table: ClassVar[str] = "notes"
-
-    title: str = ""
-    kind: str = ""
-    body: str = ""
-    rating: str = ""
-    start_date: str = ""
-    end_date: str = ""
-    duration: int = 0
-    subject_ids: list[str] = field(default_factory=list)

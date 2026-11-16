@@ -60,7 +60,6 @@ lang = "auto"
 | ~Person~   | Authors, creators                                 | UUID4           |
 | ~Software~ | Applications, libraries, OSes, video games        | UUID4           |
 | ~File~     | Content-addressed files (~pkit.archive~)          | ~sha256:<hex>~  |
-| ~Note~     | Personal layer: reviews, progress, activity logs  | UUID4           |
 
 * Sync between machines
 
@@ -80,21 +79,17 @@ their parent rows and are rebuilt on load. Browse pending repo changes with
 #+begin_src python
 from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
-from pkit.meta.models import File, Note, Person, Software, Sound, Text, Video
+from pkit.meta.models import File, Person, Software, Sound, Text, Video
 
 with MetaDB() as db:
     db.put(Text(id="t1", title="Pandora Hearts", kind="manga", author_ids=["p1"]))
     db.put(Software(id="s1", title="Tales of the Abyss", kind="game", series=["Tales"]))
     db.put(Video(id="v1", title="Ghost in the Shell", kind="movie", duration=4800))
-    db.put(Note(kind="review", rating="9/10", body="Still great.", subject_ids=["t1"]))
-    db.put(Note(kind="reading", start_date="2024-01-01", end_date="2024-03-01", subject_ids=["t1"]))
-    db.put(Note(kind="play", duration=5400, subject_ids=["s1"]))  # seconds
     record = db.get("t1")
     records = db.find(Text)  # newest first (find(cls, sort="-updated_at") by default)
     oldest = db.find(Text, sort="created_at")  # any sortable column: id, slug, created_at, updated_at, or a scalar field; "-" flips the order
     matches = db.find(where={"identifiers": "wikidata:Q42"})
     dark = db.find(Text, where={"genres": "dark fantasy", "author_ids": ["p1", "p2"]})
-    about = db.find(Note, where={"subject_ids": "t1"})  # everything about one record
     author = db.get("wikidata:Q42", by="identifiers")  # probe any queryable field
     known = db.exists("p1")  # str probes id by default; by= picks another field
     issues = db.validate()  # orphans, duplicate ids/identifiers/sha256s
@@ -121,11 +116,8 @@ On ~Text~, ~Video~, and ~Software~, ~kind~ distinguishes formats (~manga~,
 ~song~, ~album~, ~podcast~, …), ~series~ is a list of strings, and
 publishers, developers, directors, and performers are plain strings
 (~Text.author_ids~ links to ~Person~). ~Video~ and ~Sound~ carry ~duration~
-in seconds. ~Note~ is the one personal layer: ~kind~ picks the flavor
-(~review~, ~reading~, ~play~, …), ~subject_ids~ lists annotated record ids
-of any type, and ~rating~ / ~start_date~ / ~end_date~ / ~duration~ (seconds)
-carry the personal numbers — reviews, reading progress, and play time are
-notes on other records, not one model per reviewed type.
+in seconds. Personal reviews and activity logs live outside pkit, in the
+org-mode knowledge base.
 ~File.id~ is ~sha256:<hex>~ so
 re-adding the same bytes is the same row across machines; ~sha256~,
 ~sha1~ and ~md5~ live in dedicated indexed columns on ~files~ (fast

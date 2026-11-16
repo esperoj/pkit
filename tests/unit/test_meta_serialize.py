@@ -2,15 +2,15 @@
 
 import pytest
 
-from pkit.meta.models import Note, Video
+from pkit.meta.models import Person, Video
 from pkit.meta.serialize import from_dict, from_json, to_dict, to_json
 
 
 def test_to_dict_and_to_json_round_trip():
-    note = Note(kind="review", rating="9/10", subject_ids=["t1"])
+    person = Person(name="Jun", occupations=["writer"])
 
-    assert to_dict(note)["kind"] == "review"
-    assert from_json(to_json(note)) == note
+    assert to_dict(person)["name"] == "Jun"
+    assert from_json(to_json(person)) == person
 
 
 @pytest.mark.parametrize(

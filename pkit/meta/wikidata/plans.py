@@ -145,6 +145,11 @@ def _software_kind(view: EntityView) -> str:
     return kind_of(SOFTWARE_KINDS, default="software")(view)
 
 
+def _entity_id(view: EntityView) -> str:
+    """The canonical item id (after Wikidata redirect resolution)."""
+    return str(view.raw.get("id") or "")
+
+
 def _duration(view: EntityView) -> int:
     """P2047 duration as whole seconds (0 when absent or not a number)."""
     value = claim("P2047")(view)
@@ -157,7 +162,7 @@ def _duration(view: EntityView) -> int:
 PERSON_PLAN = Plan(
     model=Person,
     when=has_class("Q5"),
-    key=lambda view: str(view.raw.get("id") or ""),
+    key=_entity_id,
     fields={
         "name": person_name(),
         "gender": claim("P21", lang="en"),
@@ -182,7 +187,7 @@ SOFTWARE_PLAN = Plan(
     when=lambda view: (
         has_class(*SOFTWARE_KINDS)(view) or has_claim(*_GAME_ID_PROPS, *_SOFTWARE_PROPS)(view)
     ),
-    key=lambda view: str(view.raw.get("id") or ""),
+    key=_entity_id,
     fields={
         "title": work_title(),
         "kind": _software_kind,
@@ -222,7 +227,7 @@ SOFTWARE_PLAN = Plan(
 TEXT_PLAN = Plan(
     model=Text,
     when=lambda view: has_class(*TEXT_KINDS)(view) or has_claim(*_TEXT_ID_PROPS)(view),
-    key=lambda view: str(view.raw.get("id") or ""),
+    key=_entity_id,
     fields={
         "title": work_title(),
         "kind": kind_of(TEXT_KINDS, props=("P7937", "P31"), default="text"),
@@ -253,7 +258,7 @@ TEXT_PLAN = Plan(
 VIDEO_PLAN = Plan(
     model=Video,
     when=lambda view: has_class(*VIDEO_KINDS)(view) or has_claim(*_VIDEO_ID_PROPS)(view),
-    key=lambda view: str(view.raw.get("id") or ""),
+    key=_entity_id,
     fields={
         "title": work_title(),
         "kind": kind_of(VIDEO_KINDS, default="video"),
@@ -277,7 +282,7 @@ VIDEO_PLAN = Plan(
 SOUND_PLAN = Plan(
     model=Sound,
     when=lambda view: has_class(*SOUND_KINDS)(view) or has_claim(*_SOUND_ID_PROPS)(view),
-    key=lambda view: str(view.raw.get("id") or ""),
+    key=_entity_id,
     fields={
         "title": work_title(),
         "kind": kind_of(SOUND_KINDS, default="sound"),

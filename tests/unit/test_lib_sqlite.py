@@ -17,7 +17,7 @@ def migrations(tmp_path):
         encoding="utf-8",
     )
     (directory / "0002_second.sql").write_text(
-        "CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT NOT NULL DEFAULT '');\n",
+        "CREATE TABLE entries (id TEXT PRIMARY KEY, body TEXT NOT NULL DEFAULT '');\n",
         encoding="utf-8",
     )
     return directory
@@ -49,7 +49,7 @@ def test_database_applies_migrations_once(tmp_path, migrations):
     with sqlite.Database(db_file, migrations_dir=migrations) as db:
         assert not db.readonly
         assert "things" in _tables(db.conn)
-        assert "notes" in _tables(db.conn)
+        assert "entries" in _tables(db.conn)
         # auto_migrate only checks; the explicit call reports nothing new
         assert db.migrate() == []
 

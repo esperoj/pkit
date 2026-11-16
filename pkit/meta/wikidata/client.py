@@ -182,7 +182,7 @@ class WikidataSource(Closeable):
         probe = EntityView(entity, self._labels)
         selected = select_plan(self.plans, probe, expected)
         if selected is None:
-            return EntityView(entity, self._labels)
+            return probe
 
         orig_lang = self._detect_orig_lang(entity, is_person=selected.model is Person)
         pref = lang.strip().lower() or "auto"

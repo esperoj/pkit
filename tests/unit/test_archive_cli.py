@@ -191,6 +191,18 @@ def test_verify_mismatch_fails(run_cli, repo, db_path, added, rclone):
     assert "ia:x/v1.cbz\tmismatch" in out
 
 
+def test_verify_remote_filter_matching_nothing_prints_no_report(run_cli, repo, db_path, added):
+    with MetaDB(db_path) as meta:
+        record = meta.get(added.record_id)
+        assert isinstance(record, File)
+        meta.put(replace(record, locations=["ia:x/v1.cbz"]))
+
+    code, out, err = run_cli(main, ["verify", str(repo / "manga" / "v1.cbz"), "other:y"])
+
+    assert code == EXIT_ERROR, err  # nothing verified: the sweep alert
+    assert out == ""  # empty report: no data lines
+
+
 def test_drop_without_remote_fails(run_cli, repo, db_path, added):
     code, out, err = run_cli(main, ["drop", str(repo / "manga" / "v1.cbz")])
 

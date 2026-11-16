@@ -27,7 +27,7 @@ from pkit.meta import config as meta_config
 from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models, type_name
 from pkit.meta.serialize import from_dict, from_json
 
-__all__ = ["TIMESTAMP_COLUMNS", "MetaDB"]
+__all__ = ["MetaDB"]
 
 TIMESTAMP_COLUMNS = ("created_at", "updated_at")
 
@@ -217,20 +217,6 @@ class MetaDB(Database):
                 ],
             )
         return record
-
-    def get_or_create(self, record: Record | Mapping[str, Any]) -> Record:
-        """Return the stored record if its id exists in this type's table, else insert.
-
-        One query; own-table semantics preserved (a cross-type id collision still
-        inserts, and validate() will flag it).
-        """
-        record = _prepare(record)
-        cls = type(record)
-        row = self.conn.execute(
-            f"SELECT {_payload_sql(cls)} AS payload FROM {sql.quote(cls.table)} WHERE id = ?",
-            (record.id,),
-        ).fetchone()
-        return from_json(row["payload"]) if row is not None else self.put(record)
 
     def _lookup(
         self,

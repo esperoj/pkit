@@ -121,9 +121,11 @@ def test_save_reads_json_object_from_stdin(run_cli, patch_save_url):
     calls = patch_save_url(success_result)
     payload = {
         "url": "http://json",
-        "capture_all": "1",
-        "email_result": "off",
-        "bogus": True,
+        "capture_all": "1",  # truthy string
+        "email_result": "off",  # falsey string
+        "capture_outlinks": 0,  # non-string falsey
+        "force_get": True,  # non-string truthy
+        "bogus": True,  # unknown field: ignored
     }
     code, out, err = run_cli(main, save_cmd("--json"), input=json.dumps(payload))
 
@@ -132,6 +134,9 @@ def test_save_reads_json_object_from_stdin(run_cli, patch_save_url):
     opts = calls[0]["opts"]
     assert opts.capture_all is True
     assert opts.email_result is False
+    assert opts.capture_outlinks is False
+    assert opts.force_get is True
+    assert opts.skip_first_archive is True  # untouched default
     output = json.loads(out)
     assert output["url"] == "http://json"
 

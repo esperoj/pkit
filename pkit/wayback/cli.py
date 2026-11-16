@@ -55,21 +55,10 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _coerce_options(payload: dict[str, Any]) -> dict[str, bool]:
-    """Extract known SaveOptions fields from a JSON payload."""
-    return {key: _as_bool(value) for key, value in payload.items() if key in _OPTION_FIELDS}
-
-
-def _save_options_from_params(
-    params: dict[str, Any],
-    payload: dict[str, Any],
-) -> SaveOptions:
-    """Build SaveOptions from CLI flags and optional stdin JSON payload.
-
-    JSON payload values override CLI flag values, matching the original behavior.
-    """
-    values = {name: params[name] for name in _OPTION_FIELDS}
-    values.update(_coerce_options(payload))
+def _save_options(args: argparse.Namespace, payload: dict[str, Any]) -> SaveOptions:
+    """Build SaveOptions from CLI flags; stdin JSON payload values win."""
+    values = {name: getattr(args, name) for name in _OPTION_FIELDS}
+    values.update({key: _as_bool(value) for key, value in payload.items() if key in _OPTION_FIELDS})
     return SaveOptions(**values)
 
 
@@ -179,8 +168,7 @@ def _save(args: argparse.Namespace) -> int:
     if not url:
         return fail("No target URL provided.", exit_code=EXIT_USAGE)
 
-    params = {name: getattr(args, name) for name in _OPTION_FIELDS}
-    opts = _save_options_from_params(params, payload)
+    opts = _save_options(args, payload)
     with WaybackClient(
         api_key=args.api_key,
         api_secret=args.api_secret,

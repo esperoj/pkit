@@ -29,7 +29,8 @@ def _looks_like_url(value: str) -> bool:
 
 
 def _resolve_lang(lang: str | None, default: str) -> str:
-    value = (default if lang is None else lang).strip().lower()
+    # str() keeps a non-string TOML value (lang = 1) a usage error, not a crash.
+    value = str(default if lang is None else lang).strip().lower()
     if value not in VALID_LANGS:
         choices = ", ".join(VALID_LANGS)
         raise ValueError(f"unsupported language {value!r}; choose from {choices}")

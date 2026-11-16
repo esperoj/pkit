@@ -202,11 +202,12 @@ def _verify(args: argparse.Namespace) -> int:
         result = archive.verify(args.file, args.remotes)
     except (ArchiveError, OSError, ValueError) as exc:
         return fail(str(exc), exit_code=_exit_code(exc))
-    if args.json_output:
-        emit_result(result, json_output=True, plain=lambda r: None)
-    else:
-        for check in result.checks:
-            print(f"{check.location}\t{check.status}")
+    emit_result(
+        result,
+        json_output=args.json_output,
+        # empty checks (a remote filter that matches nothing) print nothing
+        plain=lambda r: "\n".join(f"{c.location}\t{c.status}" for c in r.checks) or None,
+    )
     # A report is success only when every check passed; a mismatch or a
     # missing copy is the alert a sweep looks for.
     return EXIT_OK if result.ok else EXIT_ERROR

@@ -11,7 +11,6 @@ from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
 from pkit.meta.models import (
     File,
-    Note,
     Person,
     Record,
     Software,
@@ -108,45 +107,6 @@ def test_round_trip(db, cls, values, where):
     assert [r.id for r in db.find(cls, where=where)] == ["x1"]
 
 
-def test_note_round_trip_and_subject_filters(db):
-    """Reviews, reading progress, and play logs are one model over any type."""
-    db.put(Text(id="t1", title="Pandora Hearts", kind="manga"))
-    db.put(Software(id="s1", title="Tales of the Abyss", kind="game"))
-    db.put(
-        Note(
-            id="n1",
-            title="Reread",
-            kind="review",
-            body="Still great.",
-            rating="9/10",
-            subject_ids=["t1"],
-        )
-    )
-    db.put(
-        Note(
-            id="n2",
-            kind="reading",
-            start_date="2024-01-01",
-            end_date="2024-03-01",
-            subject_ids=["t1"],
-        )
-    )
-    db.put(Note(id="n3", kind="play", duration=5400, subject_ids=["s1", "t1"]))
-
-    stored = db.get("n1")
-    assert isinstance(stored, Note)
-    assert stored.body == "Still great."
-    assert stored.rating == "9/10"
-    assert db.get("n2").start_date == "2024-01-01"
-    play = db.get("n3")
-    assert play.duration == 5400
-
-    assert {r.id for r in db.find(Note, where={"subject_ids": "t1"})} == {"n1", "n2", "n3"}
-    assert [r.id for r in db.find(Note, where={"subject_ids": "s1"})] == ["n3"]
-    assert [r.id for r in db.find(Note, where={"kind": "review"})] == ["n1"]
-    assert db.find(Note, where={"subject_ids": "ghost"}) == []
-
-
 def test_find_where_narrows_across_new_and_old_models(db):
     db.put(Video(id="v1", title="Abyss", genres=["science fiction"]))
     db.put(Sound(id="a1", title="Abyss", genres=["science fiction"]))
@@ -176,14 +136,6 @@ def test_put_fills_id_and_slug(db):
 
 def test_get_missing_is_none(db):
     assert db.get("nope") is None
-
-
-def test_get_or_create(db):
-    first = db.get_or_create(Person(id="p1", name="Jun"))
-    again = db.get_or_create({"id": "p1", "type": "person", "name": "Other"})
-
-    assert first == again
-    assert db.get("p1").name == "Jun"
 
 
 def test_find_filters_and_paginates(db):
@@ -567,7 +519,7 @@ def test_migrations_apply_once(tmp_path):
     with MetaDB(path) as meta:
         count = meta.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
 
-    assert count == 7
+    assert count == 6
 
 
 def test_migrations_create_expected_indexes(tmp_path):
@@ -585,7 +537,6 @@ def test_migrations_create_expected_indexes(tmp_path):
         "software_created",
         "videos_created",
         "sounds_created",
-        "notes_created",
         "files_sha256",
         "files_sha1",
         "files_md5",
@@ -766,7 +717,6 @@ def test_migrate_method_applies_and_reports(tmp_path):
         "0004_software.sql",
         "0005_video.sql",
         "0006_sound.sql",
-        "0007_note.sql",
     ]
     with MetaDB(path, auto_migrate=False) as db:
         assert db.migrate() == []
@@ -811,7 +761,7 @@ def test_migrate_skips_concurrently_applied(tmp_path, monkeypatch):
     assert applied == []
     with MetaDB(path, readonly=True) as db:
         count = db.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
-    assert count == 7
+    assert count == 6
 
 
 def test_connect_executes_zero_writes_when_current(tmp_path, monkeypatch):
@@ -967,7 +917,7 @@ def test_migrate_on_unwritable_database_fails_cleanly(tmp_path):
     path.chmod(0o444)
     extra = tmp_path / "extra"
     extra.mkdir()
-    (extra / "0007_extra.sql").write_text(
+    (extra / "0001_extra.sql").write_text(
         "CREATE TABLE IF NOT EXISTS extra (id TEXT);\n", encoding="utf-8"
     )
 
@@ -995,13 +945,13 @@ def test_close_without_context_manager_persists_commits(tmp_path):
 
 
 def test_put_mapping_null_json_fields_stored_as_empty(db):
-    db.put({"id": "n1", "type": "note", "extra": None, "subject_ids": None})
+    db.put({"id": "p1", "type": "person", "extra": None, "occupations": None})
 
-    record = db.get("n1")
+    record = db.get("p1")
 
-    assert isinstance(record, Note)
+    assert isinstance(record, Person)
     assert record.extra == {}
-    assert record.subject_ids == []
+    assert record.occupations == []
 
 
 def test_find_on_tableless_registered_model_is_empty(db):

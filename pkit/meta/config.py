@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pkit.lib import config
 
@@ -22,19 +23,11 @@ class MetaConfig:
 def load(path: str | Path | None = None) -> MetaConfig:
     data = config.load(path)
     data_dir = config.resolve(data, "core", {"data_dir": DATA_DIR})["data_dir"]
-    paths = config.resolve(
-        data,
-        "meta",
-        {
-            "db_path": data_dir / "records.db",
-            "repo_path": data_dir / "records",
-            "migrations_dir": MIGRATIONS_DIR,
-        },
-    )
-    lang = str(config.resolve(data, "meta", {"lang": "auto"})["lang"])
-    return MetaConfig(
-        db_path=paths["db_path"],
-        repo_path=paths["repo_path"],
-        migrations_dir=paths["migrations_dir"],
-        lang=lang,
-    )
+    # one heterogeneous section (Path and str keys): resolve per key, Any on purpose
+    defaults: dict[str, Any] = {
+        "db_path": data_dir / "records.db",
+        "repo_path": data_dir / "records",
+        "migrations_dir": MIGRATIONS_DIR,
+        "lang": "auto",
+    }
+    return MetaConfig(**config.resolve(data, "meta", defaults))
