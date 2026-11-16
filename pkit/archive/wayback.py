@@ -9,13 +9,13 @@ import base64
 import binascii
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Self
 from urllib.parse import quote
 
 from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import WAYBACK, RemoteFile, Status, split_wayback, wayback_location
+from pkit.lib import Closeable
 from pkit.lib.http import HttpClient, HttpError
 from pkit.wayback import client as wayback_client
 
@@ -39,7 +39,7 @@ def _sha1(digest: str) -> str:
         return ""
 
 
-class WaybackBackend:
+class WaybackBackend(Closeable):
     """One staging URL prefix served by a public base URL."""
 
     def __init__(
@@ -72,12 +72,6 @@ class WaybackBackend:
         if self._owned[1]:
             self._http.close()
         self.stage.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
 
     def url_for(self, relpath: str) -> str:
         if not self.base_url:

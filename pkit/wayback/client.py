@@ -14,10 +14,10 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 from urllib.parse import urlencode
 
-from pkit import config
+from pkit.lib import Closeable, config
 from pkit.lib.http import HttpClient, HttpError
 
 BASE_URL = "https://web.archive.org"
@@ -124,7 +124,7 @@ def _wayback_host() -> str:
     return str(config.resolve(data, "wayback", {"host": DEFAULT_HOST})["host"])
 
 
-class WaybackClient:
+class WaybackClient(Closeable):
     """Client for Wayback Machine APIs.
 
     This client is intentionally synchronous and simple. It can later grow
@@ -174,12 +174,6 @@ class WaybackClient:
         """Close the underlying HTTP session if owned by this client."""
         if self._owns_http:
             self._http.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
 
     def _endpoint(self, path: str) -> str:
         """Canonical endpoint URL; the HttpClient applies any rewriting."""

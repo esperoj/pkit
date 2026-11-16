@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from pkit.config import as_path
+from pkit.lib.config import as_path
 from pkit.meta import config
 from pkit.meta.db import MetaDB
 from pkit.meta.models import Record, new_id, type_name

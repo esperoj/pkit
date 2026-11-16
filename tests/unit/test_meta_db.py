@@ -666,11 +666,11 @@ def test_find_sort_modes(db):
 
     assert [r.id for r in db.find(Text, sort="id")] == ["t1", "t2"]
     assert [r.id for r in db.find(Text, sort="-id")] == ["t2", "t1"]
-    assert [r.id for r in db.find(Text, sort="created")] == ["t2", "t1"]
-    assert [r.id for r in db.find(Text, sort="-created")] == ["t1", "t2"]
-    assert [r.id for r in db.find(Text, sort="updated")] == ["t1", "t2"]
-    assert [r.id for r in db.find(Text, sort="-updated")] == ["t2", "t1"]
-    assert [r.id for r in db.find(Text)] == ["t2", "t1"]  # default: -updated
+    assert [r.id for r in db.find(Text, sort="created_at")] == ["t2", "t1"]
+    assert [r.id for r in db.find(Text, sort="-created_at")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="updated_at")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="-updated_at")] == ["t2", "t1"]
+    assert [r.id for r in db.find(Text)] == ["t2", "t1"]  # default: -updated_at
 
 
 def test_find_sort_tie_breaks_on_id(db):
@@ -678,8 +678,8 @@ def test_find_sort_tie_breaks_on_id(db):
     db.put(Text(id="t1", title="one"))
     db.conn.execute("UPDATE texts SET created_at = '2000-01-01T00:00:00Z'")
 
-    assert [r.id for r in db.find(Text, sort="created")] == ["t1", "t2"]
-    assert [r.id for r in db.find(Text, sort="-created")] == ["t2", "t1"]
+    assert [r.id for r in db.find(Text, sort="created_at")] == ["t1", "t2"]
+    assert [r.id for r in db.find(Text, sort="-created_at")] == ["t2", "t1"]
 
 
 def test_find_sort_works_across_types(db):
@@ -703,8 +703,8 @@ def test_find_sort_with_where_filter(db):
     ]
 
 
-def test_find_rejects_unknown_sort(db):
-    with pytest.raises(ValueError, match="unknown sort"):
+def test_find_sort_lists_known_columns_on_error(db):
+    with pytest.raises(ValueError, match="known columns: id, slug"):
         db.find(Text, sort="bogus")
 
 
@@ -743,8 +743,11 @@ def test_find_sort_narrows_to_models_carrying_the_column(db):
 def test_find_rejects_sort_the_model_lacks(db):
     with pytest.raises(ValueError, match="unknown sort"):
         db.find(Person, sort="title")
-    with pytest.raises(ValueError, match="sortable field"):
+    with pytest.raises(ValueError, match="unknown sort"):
         db.find(sort="bogus")
+    # a column some other type carries is still unknown to this type
+    with pytest.raises(ValueError, match="unknown sort"):
+        db.find(Person, sort="duration")
 
 
 # --- migrate() and zero-write connections ------------------------------------

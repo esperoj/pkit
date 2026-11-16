@@ -14,7 +14,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pkit import config
 from pkit.archive.cas import (
     Entry,
     abs_path,
@@ -33,6 +32,7 @@ from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import WAYBACK, RemoteFile, Status, selects
 from pkit.archive.wayback import WaybackBackend
+from pkit.lib import config
 from pkit.meta.models import File
 
 __all__ = [

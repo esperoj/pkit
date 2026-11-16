@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pkit.archive.errors import InputError
+from pkit.lib import CHUNK_SIZE
 
 __all__ = [
     "CAS_DIRNAME",
@@ -35,7 +36,6 @@ __all__ = [
 
 CAS_DIRNAME = "pkit-archive"
 OBJECT_MODE = 0o444
-CHUNK_SIZE = 1024 * 1024
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 

@@ -37,8 +37,11 @@ pkit/
 ├── version.py           # lazy version resolution
 ├── lib/                 # shared, tool-agnostic (the ONLY shared home)
 │   ├── cli.py           # exit codes, stdin, emit, fail, run_tool
+│   ├── config.py        # TOML file + environment, one precedence rule
 │   ├── http.py          # HttpClient: session, timeout, HttpError, URL rewriting
-│   └── shell.py         # run external commands
+│   ├── shell.py         # run external commands
+│   ├── sql.py           # SQL builders: quoting, placeholders, filters, sorts, upserts
+│   └── sqlite.py        # connect, migrations, the Database base class
 ├── meta/
 │   ├── __main__.py      # python -m pkit.meta
 │   ├── cli.py           # dump / load / migrate / validate
@@ -69,7 +72,9 @@ each ~cli.py~, so all three stay in lockstep by construction.
 |------------------------------+-----------------------------------------------------------------------|
 | ~client.py~ / SDK modules    | Must NOT print, or know stdout/stderr/exit codes                      |
 | ~lib/cli.py~                 | Generic CLI plumbing ONLY; no tool-specific logic                     |
-| ~lib/http.py~, ~lib/shell.py~ | Tool-agnostic; callers map errors to their own types                  |
+| ~lib/config.py~              | Tool-agnostic config; scripts may import ~pkit.lib~ directly          |
+| ~lib/sql.py~, ~lib/sqlite.py~ | Tool-agnostic SQL builders and sqlite plumbing; reusable by scripts  |
+| ~lib/http.py~, ~lib/shell.py~ | Tool-agnostic; callers map errors to their own types                 |
 | URL rewriting                 | Only in ~lib/http.py~ (~proxy_prefix~, ~host_map~); SDKs store and return canonical URLs |
 | Wayback coercion             | Belongs in ~pkit/wayback/cli.py~                                      |
 | Version                      | Lives only in ~pyproject.toml~; use ~pkit.version.get_version()~      |

@@ -2,7 +2,7 @@
 
 import pytest
 
-from pkit import config
+from pkit.lib import config
 
 
 @pytest.mark.parametrize(

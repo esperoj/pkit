@@ -9,7 +9,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from pkit.config import as_path
+from pkit.lib.config import as_path
 from pkit.meta import config
 from pkit.meta.db import MetaDB
 from pkit.meta.models import stored_models

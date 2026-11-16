@@ -8,12 +8,12 @@ import json
 import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import NoReturn, Self
+from typing import NoReturn
 
 from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.remote import RemoteFile, Status
-from pkit.lib import shell
+from pkit.lib import Closeable, shell
 
 __all__ = ["RcloneBackend"]
 
@@ -33,7 +33,7 @@ def _tokens(row: dict) -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
-class RcloneBackend:
+class RcloneBackend(Closeable):
     """One rclone destination prefix."""
 
     def __init__(self, prefix: str, *, timeout: float | None = None) -> None:
@@ -41,15 +41,6 @@ class RcloneBackend:
             raise InputError(f"not an rclone remote: {prefix!r}")
         self.prefix = prefix.rstrip("/")
         self.timeout = timeout
-
-    def close(self) -> None:
-        """Nothing to release; kept so both backends share a shape."""
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
 
     def location(self, relpath: str) -> str:
         relpath = relpath.lstrip("/")

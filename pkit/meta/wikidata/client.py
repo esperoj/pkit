@@ -2,10 +2,10 @@
 
 import re
 from collections.abc import Sequence
-from types import TracebackType
-from typing import Any, Self
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from pkit.lib import Closeable
 from pkit.lib.http import HttpClient
 from pkit.meta.models import Person, Record
 from pkit.meta.source import Plan, select_plan
@@ -49,7 +49,7 @@ def _parse_qid(url: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
-class WikidataSource:
+class WikidataSource(Closeable):
     """Fetch Wikidata items via wbgetentities and batch-resolve referenced labels."""
 
     name: str = "wikidata"
@@ -77,17 +77,6 @@ class WikidataSource:
     def close(self) -> None:
         if self._owns_http and self._http is not None:
             self._http.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.close()
 
     def match(self, url: str) -> str | None:
         return _parse_qid(url)

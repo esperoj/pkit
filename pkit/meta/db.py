@@ -1,7 +1,8 @@
 """Record storage: one class over one sqlite connection.
 
-MetaDB owns connect + migrate + commit/rollback + close, so no caller threads
-a raw connection through its code. It is a context manager:
+MetaDB layers typed record methods on pkit.lib.sqlite.Database, which owns
+connect + migrate + commit/rollback + close, so no caller threads a raw
+connection through its code. It is a context manager:
 
     with MetaDB(path) as db:
         db.put(Text(id="t1", title="..."))
@@ -9,12 +10,8 @@ a raw connection through its code. It is a context manager:
 
 Input rule: lenient at the edge (Record or mapping in, str | Path | None for
 paths), strict inside, one output type. Here `str` always means a record id —
-never a JSON payload.
-
-Migrations are checked read-only on connect and applied only when pending,
-so an up-to-date database takes no write lock (gnu parallel can hammer
-`pkit archive verify`). readonly=True opens the file read-only and never
-migrates; migrate() is public for `pkit meta migrate`.
+never a JSON payload. SQL fragments come from pkit.lib.sql, so quoting,
+placeholders and sorts behave like every other pkit database.
 """
 
 import json
@@ -22,33 +19,22 @@ import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Self
-from urllib.parse import quote
+from typing import Any
 
+from pkit.lib import sql
+from pkit.lib.sqlite import Database
 from pkit.meta import config as meta_config
 from pkit.meta.models import RECORD_TYPES, Record, new_id, stored_models, type_name
 from pkit.meta.serialize import from_dict, from_json
 
-__all__ = ["MetaDB"]
+__all__ = ["TIMESTAMP_COLUMNS", "MetaDB"]
 
-CONNECT_TIMEOUT = 30.0
-BUSY_TIMEOUT_MS = 30000
-
-
-def _q(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
+TIMESTAMP_COLUMNS = ("created_at", "updated_at")
 
 
-def _sort_names(cls: type[Record]) -> tuple[str, ...]:
-    """Every sort name one model accepts: id, slug, timestamps, scalar fields."""
-    return ("id", "slug", "created", "updated", *cls.scalar_fields)
-
-
-def _sort_column(cls: type[Record], name: str) -> str | None:
-    """The ORDER BY column for one sort name, or None when the model lacks it."""
-    if name not in _sort_names(cls):
-        return None
-    return f"{name}_at" if name in ("created", "updated") else name
+def _sortable(cls: type[Record]) -> tuple[str, ...]:
+    """Every column find() may sort by: id, slug, timestamps, scalar fields."""
+    return ("id", "slug", *TIMESTAMP_COLUMNS, *cls.scalar_fields)
 
 
 def _resolve_type(record_type: str | type[Record] | None) -> type[Record] | None:
@@ -87,56 +73,38 @@ def _field_kind(cls: type[Record], name: str) -> str | None:
     return None
 
 
-def _placeholders(items: list[Any]) -> str:
-    return ", ".join("?" * len(items))
-
-
 def _condition(cls: type[Record], name: str, items: list[Any]) -> str:
     """SQL condition matching one field against materialized items."""
-    table = _q(cls.table)
     kind = _field_kind(cls, name)
     if kind == "scalar":
-        column = _q(name)
-        return f"{column} = ?" if len(items) == 1 else f"{column} IN ({_placeholders(items)})"
+        return sql.equals(name, items)
     if kind == "array":
-        column = _q(name)
-        return (
-            f"EXISTS (SELECT 1 FROM json_each({table}.{column}) AS _e "
-            f"WHERE _e.value IN ({_placeholders(items)}))"
-        )
+        return sql.json_contains(cls.table, name, items)
     link = next(link for link in cls.links if link.key == name)
     return (
-        f"EXISTS (SELECT 1 FROM {_q(link.table)} "
-        f"WHERE {_q(link.parent_column)} = {table}.id "
-        f"AND {_q(link.child_column)} IN ({_placeholders(items)}))"
+        f"EXISTS (SELECT 1 FROM {sql.quote(link.table)} "
+        f"WHERE {sql.quote(link.parent_column)} = {sql.quote(cls.table)}.id "
+        f"AND {sql.quote(link.child_column)} IN ({sql.placeholders(items)}))"
     )
 
 
-def _flatten(value: Any) -> list[Any]:
-    """Materialized filter items for one where value.
+def _items(value: Any) -> list[Any] | None:
+    """Materialized filter values, or None when the value is absent or empty.
 
     A single value stays a one-item list; a collection keeps its order minus
-    duplicates. None and mappings are rejected: they are never filter values.
+    duplicates. None means absent (probes skip it, find rejects it); a
+    mapping is never a filter value and always raises.
     """
-    if value is None or isinstance(value, Mapping):
-        raise ValueError(f"not a filter value: {value!r}")
-    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
-        return [value]
-    return list(dict.fromkeys(value))
-
-
-def _probe_items(value: Any) -> list[Any] | None:
-    """Materialized probe items, or None when the value is empty (skip)."""
+    if isinstance(value, Mapping):
+        # a mapping is a wrong filter value shape, not a wrong argument type
+        raise ValueError(f"not a filter value: {value!r}")  # noqa: TRY004 - tested contract
     if value is None:
         return None
     if isinstance(value, (str, bytes)):
         return [value] if value else None
-    if isinstance(value, Iterable) and not isinstance(value, Mapping):
-        items = list(dict.fromkeys(value))
-        return items or None
-    if not isinstance(value, Mapping):
-        return [value]
-    raise ValueError(f"not a filter value: {value!r}")
+    if isinstance(value, Iterable):
+        return list(dict.fromkeys(value)) or None
+    return [value]
 
 
 def _by_fields(by: str | Iterable[str] | None, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -174,14 +142,14 @@ def _prepare(record: Record | Mapping[str, Any]) -> Record:
 
 def _payload_sql(cls: type[Record]) -> str:
     """SQL expression returning one row as a JSON payload, links included."""
-    table = _q(cls.table)
+    table = sql.quote(cls.table)
     parts = ["'id'", "id", "'type'", f"'{type_name(cls)}'", "'slug'", "slug"]
-    parts += [x for n in cls.scalar_fields for x in (f"'{n}'", _q(n))]
-    parts += [x for n in cls.json_fields for x in (f"'{n}'", f"json({_q(n)})")]
+    parts += [x for n in cls.scalar_fields for x in (f"'{n}'", sql.quote(n))]
+    parts += [x for n in cls.json_fields for x in (f"'{n}'", f"json({sql.quote(n)})")]
     for link in cls.links:
         sub = (
-            f"SELECT json_group_array({_q(link.child_column)}) FROM {_q(link.table)} "
-            f"WHERE {_q(link.parent_column)} = {table}.id"
+            f"SELECT json_group_array({sql.quote(link.child_column)}) FROM {sql.quote(link.table)} "
+            f"WHERE {sql.quote(link.parent_column)} = {table}.id"
         )
         parts += [f"'{link.key}'", f"json(COALESCE(({sub}), '[]'))"]
     return "json_object(" + ", ".join(parts) + ")"
@@ -200,18 +168,13 @@ def _values(record: Record, cls: type[Record]) -> list[Any]:
     return values
 
 
-class MetaDB:
+class MetaDB(Database):
     """The record database: sqlite tables behind typed record methods.
 
-    Context-manager contract: commit on success, roll back on error, always
-    close. `commit()` stays public for callers that need intermediate
-    durability inside one long session (archive.add commits per file).
-    Foreign keys are OFF so import order is free.
-
-    readonly=True opens an existing database read-only (mode=ro, no DDL, no
-    migrations). A missing or empty file still creates the schema once, so
-    dump/validate behave sensibly on a fresh machine. auto_migrate=False
-    skips the automatic check for callers that run migrate() themselves.
+    The database path and migrations dir default to [meta] db_path /
+    migrations_dir (and their $PKIT_META_* overrides); everything else —
+    connect, migrations, commit/rollback, close — is the shared
+    pkit.lib.sqlite.Database contract.
     """
 
     def __init__(
@@ -223,106 +186,12 @@ class MetaDB:
         auto_migrate: bool = True,
     ) -> None:
         cfg = meta_config.load()
-        target = Path(path if path is not None else cfg.db_path).expanduser()
-        self._migrations_dir = Path(
-            migrations_dir if migrations_dir is not None else cfg.migrations_dir
-        ).expanduser()
-        self.readonly = readonly and target.is_file() and target.stat().st_size > 0
-        if self.readonly:
-            self.conn = sqlite3.connect(
-                f"file:{quote(str(target))}?mode=ro", uri=True, timeout=CONNECT_TIMEOUT
-            )
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            self.conn = sqlite3.connect(str(target), timeout=CONNECT_TIMEOUT)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = OFF")
-        self.conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        if not self.readonly and auto_migrate and self._pending_migrations(self._migrations_dir):
-            self.migrate(self._migrations_dir)
-
-    def _pending_migrations(self, directory: Path) -> list[Path]:
-        """Unapplied .sql files, checked without taking any write lock."""
-        if not directory.is_dir():
-            return []
-        files = sorted(directory.glob("*.sql"))
-        if not files:
-            return []
-        row = self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_migrations'"
-        ).fetchone()
-        if row is None:
-            return files
-        applied = {row[0] for row in self.conn.execute("SELECT name FROM _migrations")}
-        return [file for file in files if file.name not in applied]
-
-    def migrate(self, migrations_dir: str | Path | None = None) -> list[str]:
-        """Apply pending migrations, returning the names applied ([] when current).
-
-        WAL journaling is enabled best-effort (read-only or locked databases
-        keep their current mode). Each file runs inside BEGIN IMMEDIATE with
-        its _migrations bookkeeping; the primary key re-checks the applied
-        set inside the transaction, so concurrent migrators are safe — the
-        loser's re-run rolls back whole on the duplicate insert.
-        Migration files must not contain BEGIN/COMMIT and must end statements
-        with ';'.
-        """
-        directory = Path(
-            migrations_dir if migrations_dir is not None else self._migrations_dir
-        ).expanduser()
-        if not directory.is_dir():
-            return []
-        try:
-            self.conn.execute("PRAGMA journal_mode = WAL")
-        except sqlite3.OperationalError:
-            pass
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS _migrations ("
-            "name TEXT PRIMARY KEY CHECK (name <> ''), "
-            "applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))"
+        super().__init__(
+            path if path is not None else cfg.db_path,
+            migrations_dir=migrations_dir if migrations_dir is not None else cfg.migrations_dir,
+            readonly=readonly,
+            auto_migrate=auto_migrate,
         )
-        applied = {row[0] for row in self.conn.execute("SELECT name FROM _migrations")}
-        newly: list[str] = []
-        for file_path in sorted(directory.glob("*.sql")):
-            if file_path.name in applied:
-                continue
-            # Schema change and bookkeeping row commit together: no crash
-            # window where a migration is applied but unrecorded.
-            name = file_path.name.replace("'", "''")
-            try:
-                self.conn.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    + file_path.read_text(encoding="utf-8")
-                    + f"\nINSERT INTO _migrations(name) VALUES ('{name}');\nCOMMIT;"
-                )
-            except sqlite3.IntegrityError:
-                # A concurrent migrator recorded it while we waited on the
-                # write lock; our whole re-run rolled back with the insert.
-                self.conn.rollback()
-                continue
-            applied.add(file_path.name)
-            newly.append(file_path.name)
-        return newly
-
-    def close(self) -> None:
-        """Close the connection."""
-        self.conn.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        try:
-            if exc_type is None:
-                self.conn.commit()
-            else:
-                self.conn.rollback()
-        finally:
-            self.conn.close()
-
-    def commit(self) -> None:
-        """Persist writes so far; the context exit commits the remainder."""
-        self.conn.commit()
 
     def put(self, record: Record | Mapping[str, Any]) -> Record:
         """Insert or update by id, then re-sync link rows.
@@ -332,20 +201,15 @@ class MetaDB:
         record = _prepare(record)
         cls = type(record)
         cols = ["id", "slug", *cls.scalar_fields, *cls.json_fields]
-        self.conn.execute(
-            f"INSERT INTO {_q(cls.table)} ({', '.join(map(_q, cols))}) "
-            f"VALUES ({', '.join('?' * len(cols))}) ON CONFLICT(id) DO UPDATE SET "
-            + ", ".join(f"{_q(c)} = excluded.{_q(c)}" for c in cols if c != "id"),
-            _values(record, cls),
-        )
+        self.conn.execute(sql.upsert(cls.table, cols), _values(record, cls))
         for link in cls.links:
             self.conn.execute(
-                f"DELETE FROM {_q(link.table)} WHERE {_q(link.parent_column)} = ?",
+                f"DELETE FROM {sql.quote(link.table)} WHERE {sql.quote(link.parent_column)} = ?",
                 (record.id,),
             )
             self.conn.executemany(
-                f"INSERT OR IGNORE INTO {_q(link.table)} "
-                f"({_q(link.parent_column)}, {_q(link.child_column)}) VALUES (?, ?)",
+                f"INSERT OR IGNORE INTO {sql.quote(link.table)} "
+                f"({sql.quote(link.parent_column)}, {sql.quote(link.child_column)}) VALUES (?, ?)",
                 [
                     (record.id, c)
                     for c in (getattr(record, link.key) or [])
@@ -363,7 +227,7 @@ class MetaDB:
         record = _prepare(record)
         cls = type(record)
         row = self.conn.execute(
-            f"SELECT {_payload_sql(cls)} AS payload FROM {_q(cls.table)} WHERE id = ?",
+            f"SELECT {_payload_sql(cls)} AS payload FROM {sql.quote(cls.table)} WHERE id = ?",
             (record.id,),
         ).fetchone()
         return from_json(row["payload"]) if row is not None else self.put(record)
@@ -415,7 +279,7 @@ class MetaDB:
                     raise ValueError(f"no stored record type has a queryable field {name!r}")
 
         for name in fields:
-            items = _probe_items(values[name])
+            items = _items(values[name])
             if items is None:
                 continue
             models = (
@@ -428,7 +292,7 @@ class MetaDB:
             for model in models:
                 expression = f"{_payload_sql(model)} AS payload" if payload else "1"
                 row = self.conn.execute(
-                    f"SELECT {expression} FROM {_q(model.table)} "
+                    f"SELECT {expression} FROM {sql.quote(model.table)} "
                     f"WHERE {_condition(model, name, items)} LIMIT 1",
                     items,
                 ).fetchone()
@@ -475,7 +339,7 @@ class MetaDB:
         where: Mapping[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
-        sort: str = "-updated",
+        sort: str = "-updated_at",
     ) -> list[Record]:
         """All records of a type (or all types), newest first by default.
 
@@ -484,31 +348,27 @@ class MetaDB:
         becomes IN), array fields (identifiers, genres, ...) match by
         membership, and link fields (author_ids) match through the link
         table; an empty collection matches nothing. sort names any sortable
-        column — "id", "slug", "created", "updated" or any scalar field —
-        optionally prefixed with "-" for descending order (default
-        "-updated"); every sort but id tie-breaks on id. With record_type
-        None, only stored models carrying every where key and the sort
-        column are searched. Unknown types, sorts and where fields raise
-        ValueError listing known values.
+        column — "id", "slug", "created_at", "updated_at" or any scalar
+        field — with a "-" prefix for descending order (default
+        "-updated_at"); every sort but id tie-breaks on id. With
+        record_type None, only stored models carrying every where key and
+        the sort column are searched. Unknown types, sorts and where
+        fields raise ValueError listing known values.
         """
         cls = _resolve_type(record_type)
-        descending, name = sort.startswith("-"), sort.removeprefix("-")
         if cls is not None:
-            if _sort_column(cls, name) is None:
-                raise ValueError(
-                    f"unknown sort {sort!r}; known sorts: {', '.join(_sort_names(cls))}"
-                )
+            column, descending = sql.parse_sort(sort, _sortable(cls))
             models = (cls,) if cls.table else ()
         else:
-            models = tuple(
-                model for model in stored_models() if _sort_column(model, name) is not None
+            every = dict.fromkeys(
+                ("id", "slug", *TIMESTAMP_COLUMNS)
+                + tuple(field for model in stored_models() for field in model.scalar_fields)
             )
-            if not models:
-                raise ValueError(f"no stored record type has a sortable field {name!r}")
+            column, descending = sql.parse_sort(sort, tuple(every))
+            models = tuple(model for model in stored_models() if column in _sortable(model))
         if not models:
             return []
-        column = f"{name}_at" if name in ("created", "updated") else name
-        order_columns = ("id",) if name == "id" else (column, "id")
+        order_columns = ("id",) if column == "id" else (column, "id")
         direction = "DESC" if descending else "ASC"
         filters: dict[str, list[Any]] = {}
         if where:
@@ -519,7 +379,9 @@ class MetaDB:
                 elif not any(_field_kind(model, key) is not None for model in models):
                     raise ValueError(f"no stored record type has a queryable field {key!r}")
             for key, value in where.items():
-                items = _flatten(value)
+                if value is None:
+                    raise ValueError(f"not a filter value: {value!r}")
+                items = _items(value)
                 if not items:
                     return []
                 filters[key] = items
@@ -527,40 +389,42 @@ class MetaDB:
                 models = tuple(
                     model
                     for model in models
-                    if all(_field_kind(model, name) is not None for name in filters)
+                    if all(_field_kind(model, key) is not None for key in filters)
                 )
                 if not models:
                     return []
         selects: list[str] = []
         params: list[Any] = []
         for model in models:
-            table = _q(model.table)
+            table = sql.quote(model.table)
             clauses = [_condition(model, key, items) for key, items in filters.items()]
             where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
             payload = _payload_sql(model)
             selects.append(
                 f"SELECT {payload} AS payload, "
-                f"{', '.join(_q(c) for c in order_columns)} FROM {table}{where_sql}"
+                f"{', '.join(sql.quote(c) for c in order_columns)} FROM {table}{where_sql}"
             )
             params.extend(item for items in filters.values() for item in items)
         union = " UNION ALL ".join(selects)
-        order_sql = ", ".join(f"{_q(c)} {direction}" for c in order_columns)
-        sql = f"SELECT payload FROM ({union}) ORDER BY {order_sql}"
+        order_sql = ", ".join(f"{sql.quote(c)} {direction}" for c in order_columns)
+        sql_text = f"SELECT payload FROM ({union}) ORDER BY {order_sql}"
         if limit is not None or offset:
-            sql += " LIMIT ? OFFSET ?"
+            sql_text += " LIMIT ? OFFSET ?"
             params.extend([limit if limit is not None else -1, offset])
-        return [from_json(row["payload"]) for row in self.conn.execute(sql, params)]
+        return [from_json(row["payload"]) for row in self.conn.execute(sql_text, params)]
 
     def delete(self, record_id: str) -> bool:
         """Hard-delete, plus every link row referencing the id."""
         found = False
         for cls in stored_models():
-            cur = self.conn.execute(f"DELETE FROM {_q(cls.table)} WHERE id = ?", (record_id,))
+            cur = self.conn.execute(
+                f"DELETE FROM {sql.quote(cls.table)} WHERE id = ?", (record_id,)
+            )
             found |= bool(cur.rowcount)
             for link in cls.links:
                 self.conn.execute(
-                    f"DELETE FROM {_q(link.table)} "
-                    f"WHERE {_q(link.parent_column)} = ? OR {_q(link.child_column)} = ?",
+                    f"DELETE FROM {sql.quote(link.table)} "
+                    f"WHERE {sql.quote(link.parent_column)} = ? OR {sql.quote(link.child_column)} = ?",
                     (record_id, record_id),
                 )
         return found
@@ -576,20 +440,21 @@ class MetaDB:
                     (link.child_column, link.child_table),
                 ):
                     rows = self.conn.execute(
-                        f"SELECT {_q(col)} FROM {_q(link.table)} "
-                        f"WHERE NOT EXISTS (SELECT 1 FROM {_q(ref)} WHERE id = {_q(link.table)}.{_q(col)})"
+                        f"SELECT {sql.quote(col)} FROM {sql.quote(link.table)} "
+                        f"WHERE NOT EXISTS (SELECT 1 FROM {sql.quote(ref)} "
+                        f"WHERE id = {sql.quote(link.table)}.{sql.quote(col)})"
                     )
                     issues.extend(f"{link.table}.{col} {row[0]!r} does not exist" for row in rows)
         seen: dict[str, str] = {}
         for cls in models:
-            for row in self.conn.execute(f"SELECT id FROM {_q(cls.table)}"):
+            for row in self.conn.execute(f"SELECT id FROM {sql.quote(cls.table)}"):
                 rid = row["id"]
                 if rid in seen:
                     issues.append(f"duplicate record id {rid!r} in {seen[rid]!r} and {cls.table!r}")
                 else:
                     seen[rid] = cls.table
         for cls in models:
-            table = _q(cls.table)
+            table = sql.quote(cls.table)
             rows = self.conn.execute(
                 f"SELECT _id.value FROM {table}, json_each({table}.identifiers) AS _id "
                 "WHERE _id.value <> '' "

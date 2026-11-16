@@ -19,7 +19,7 @@ import threading
 from collections.abc import Callable, Generator, Iterator, Sequence
 from json import dumps
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 
 import pytest
 import requests
@@ -27,6 +27,7 @@ import requests
 from pkit import archive
 from pkit.archive.cas import Entry, Hashes, hash_file
 from pkit.archive.remote import RemoteFile, Status
+from pkit.lib import Closeable
 from pkit.lib.http import HttpClient, HttpError
 from pkit.wayback.client import WaybackClient
 
@@ -163,12 +164,6 @@ class FakeHttpClient(HttpClient):
     def close(self) -> None:
         pass
 
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
-
 
 class _Server(http.server.ThreadingHTTPServer):
     """ThreadingHTTPServer carrying its routes and request log."""
@@ -290,7 +285,7 @@ class FakeRclone:
         return subprocess.CompletedProcess(list(args), 0, out, "")
 
 
-class FakeBackend:
+class FakeBackend(Closeable):
     """In-memory archive remote with the backend contract.
 
     copy() uploads by reading through the CAS symlinks and stores the bytes;
@@ -310,15 +305,6 @@ class FakeBackend:
         relpath = relpath.lstrip("/")
         sep = "" if self.remote.endswith(":") else "/"
         return f"{self.remote}{sep}{relpath}"
-
-    def close(self) -> None:
-        pass
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
 
     # Sequence, not list: the method named `list` below shadows the builtin
     # inside the class body, so `list[...]` would not resolve as a type here.

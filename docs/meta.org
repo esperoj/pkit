@@ -90,8 +90,8 @@ with MetaDB() as db:
     db.put(Note(kind="reading", start_date="2024-01-01", end_date="2024-03-01", subject_ids=["t1"]))
     db.put(Note(kind="play", duration=5400, subject_ids=["s1"]))  # seconds
     record = db.get("t1")
-    records = db.find(Text)  # newest first (find(cls, sort="-updated") by default)
-    oldest = db.find(Text, sort="created")  # any sortable column: id, slug, created, updated, or a scalar field; "-" flips the order
+    records = db.find(Text)  # newest first (find(cls, sort="-updated_at") by default)
+    oldest = db.find(Text, sort="created_at")  # any sortable column: id, slug, created_at, updated_at, or a scalar field; "-" flips the order
     matches = db.find(where={"identifiers": "wikidata:Q42"})
     dark = db.find(Text, where={"genres": "dark fantasy", "author_ids": ["p1", "p2"]})
     about = db.find(Note, where={"subject_ids": "t1"})  # everything about one record

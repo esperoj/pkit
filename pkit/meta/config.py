@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from pkit import config
+from pkit.lib import config
 
 __all__ = ["MetaConfig", "load"]
 

@@ -11,16 +11,15 @@ explicitly passed value overrides the config; an empty one disables it.
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
-from pkit import config
+from pkit.lib import CHUNK_SIZE, Closeable, config
 
 __all__ = ["HttpClient", "HttpError"]
 
-CHUNK_SIZE = 1024 * 1024
 MAX_REDIRECTS = 10
 _REDIRECT_STATUSES = frozenset((301, 302, 303, 307, 308))
 
@@ -49,7 +48,7 @@ def _http_config() -> tuple[str, dict[str, str]]:
     return prefix, {str(key).lower(): str(value) for key, value in hosts.items()}
 
 
-class HttpClient:
+class HttpClient(Closeable):
     """Closeable requests wrapper with a default timeout and typed errors.
 
     resolve_url rewrites every outgoing URL: a host_map match lands directly
@@ -85,12 +84,6 @@ class HttpClient:
     def close(self) -> None:
         """Close the underlying session."""
         self._session.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
 
     def resolve_url(self, url: str) -> str:
         """Rewrite one URL: a host_map match first, then the proxy prefix.
