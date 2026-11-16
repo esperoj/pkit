@@ -74,9 +74,9 @@ layer, inside ~pkit.lib.http.HttpClient~ (~resolve_url~):
 - ~--proxy P~ routes canonical URLs through ~P~ instead (a ~/~ is inserted
   between a prefix not ending in ~/~, ~?~ or ~=~). It disables the mirror
   host rewrite — never both.
-- Redirects are followed manually while rewriting: 301/302/303 become GET,
-  307/308 keep method and body, and ~Authorization~ is dropped when a
-  redirect leaves the trusted hosts (the mirror, the proxy host).
+- Redirects are always followed manually (rewriting or not): 301/302/303
+  become GET, 307/308 keep method and body, and ~Authorization~ is dropped
+  when a redirect leaves the trusted hosts (the mirror, the proxy host).
 
 The same rewriting serves every ~HttpClient~ user (~WaybackBackend.fetch~
 downloads, Wikidata imports) through the shared ~[http]~ config:

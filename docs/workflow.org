@@ -30,7 +30,7 @@ make upgrade    # re-resolve everything to the latest versions
 Both run ~pip-compile~ directly against ~pyproject.toml~, so dependencies
 are declared in one place only, and write:
 
-- ~requirements.txt~ — runtime dependencies
+- ~requirements.txt~ — runtime dependencies (currently empty: pkit has none)
 - ~requirements-dev.txt~ — runtime + dev dependencies (a superset)
 
 The dev lock is compiled with ~-c requirements.txt~ so shared pins stay

@@ -38,7 +38,7 @@ pkit/
 ├── lib/                 # shared, tool-agnostic (the ONLY shared home)
 │   ├── cli.py           # exit codes, stdin, emit, fail, run_tool
 │   ├── config.py        # TOML file + environment, one precedence rule
-│   ├── http.py          # HttpClient: session, timeout, HttpError, URL rewriting
+│   ├── http.py          # HttpClient: transport, timeout, HttpError, URL rewriting
 │   ├── shell.py         # run external commands
 │   ├── sql.py           # SQL builders: quoting, placeholders, filters, sorts, upserts
 │   └── sqlite.py        # connect, migrations, the Database base class
@@ -189,10 +189,11 @@ implementation-detail names.
 
 * 6. Dependencies
 
-Prefer: stdlib (argparse for CLIs), requests (HTTP), pytest. Do NOT add deps
-for: logging, configuration, validation, retry, schema enforcement, CLI
+Prefer: stdlib (argparse for CLIs, urllib.request for HTTP), pytest. Do NOT add
+deps for: logging, configuration, validation, retry, schema enforcement, CLI
 generation, DI, rich output, progress bars, metrics, HTTP mocking. A
 dependency is accepted only if it removes significant code *and* is stable.
+pkit itself has zero runtime dependencies.
 
 Packaging and environments stay in the pip family: ~venv~ + ~pip~ install,
 ~pip-tools~ (~pip-compile~) hash-locks dependencies from ~pyproject.toml~

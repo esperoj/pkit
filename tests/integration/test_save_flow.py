@@ -5,11 +5,13 @@ headers, form bodies and status mapping all cross the wire for real.
 """
 
 import json
+from typing import Any
 from urllib.parse import parse_qs
 
-import requests
+from tests.conftest import FakeResponse
 
 from pkit.lib.cli import EXIT_ERROR, EXIT_TEMPFAIL, EXIT_USAGE
+from pkit.lib.http import Response
 from pkit.wayback.cli import main
 from pkit.wayback.client import BASE_URL, DEFAULT_HOST, WaybackClient
 
@@ -192,19 +194,15 @@ def test_sdk_save_success(http_server, disable_sleep):
     assert parse_qs(post["body"])["url"] == ["http://example.com"]
 
 
-def _json_response(payload: dict) -> requests.Response:
-    response = requests.Response()
-    response.status_code = 200
-    response._content = json.dumps(payload).encode()
-    response.headers["Content-Type"] = "application/json"
-    return response
+def _json_response(payload: dict) -> FakeResponse:
+    return FakeResponse(json=payload)
 
 
-def test_sdk_defaults_to_mirror_host_with_canonical_results(monkeypatch, disable_sleep):
+def test_sdk_defaults_to_mirror_host_with_canonical_results(patch_transport, disable_sleep):
     """Default traffic goes to the mirror host; results stay canonical."""
     seen: list[str] = []
 
-    def spy(method, url, **kwargs):
+    def handler(method: str, url: str, **kwargs: Any) -> Response:
         seen.append(url)
         path = url.partition("?")[0]
         if path.endswith("/save/status/user"):
@@ -218,7 +216,7 @@ def test_sdk_defaults_to_mirror_host_with_canonical_results(monkeypatch, disable
         raise AssertionError(f"unexpected request: {method} {url}")
 
     with WaybackClient(api_key="k", api_secret="s", lock_file="") as client:
-        monkeypatch.setattr(client._http._session, "request", spy)
+        patch_transport(client._http, handler)
         result = client.save_url("http://example.com")
 
     # The _t cache-buster query is the only varying part; drop it.
@@ -230,15 +228,15 @@ def test_sdk_defaults_to_mirror_host_with_canonical_results(monkeypatch, disable
     assert result.archive_url == f"{BASE_URL}/web/123id_/http://example.com"
 
 
-def test_sdk_host_override_rewrites_requests(monkeypatch, disable_sleep):
+def test_sdk_host_override_rewrites_requests(patch_transport, disable_sleep):
     seen: list[str] = []
 
-    def spy(method, url, **kwargs):
+    def handler(method: str, url: str, **kwargs: Any) -> Response:
         seen.append(url)
         return _json_response({"available": 1})
 
     with WaybackClient(api_key="k", api_secret="s", lock_file="", host="my.mirror") as client:
-        monkeypatch.setattr(client._http._session, "request", spy)
+        patch_transport(client._http, handler)
         client._wait_for_availability()
 
     assert [url.partition("?")[0] for url in seen] == ["https://my.mirror/save/status/user"]

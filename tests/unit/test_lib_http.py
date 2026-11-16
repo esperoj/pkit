@@ -1,16 +1,23 @@
+import email.message
+import io
 from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
-import requests
 
-from pkit.lib.http import HttpClient, HttpError
+from pkit.lib.http import HttpClient, HttpError, Response
+from pkit.version import get_version
 
 
 def write_config(tmp_path: Path, body: str, monkeypatch) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text(body, encoding="utf-8")
     monkeypatch.setenv("PKIT_CONFIG", str(config_file))
+
+
+def sent_headers(server) -> dict[str, str]:
+    """The last request's headers, lower-cased: HTTP headers are case-insensitive."""
+    return {key.lower(): value for key, value in server.requests[-1]["headers"].items()}
 
 
 def test_request_returns_json(http_server):
@@ -30,8 +37,37 @@ def test_request_sends_headers_and_params(http_server):
         http.request("GET", f"{http_server.url}/thing", params={"q": "x"})
 
     sent = http_server.requests[-1]
-    assert sent["headers"]["Accept"] == "application/json"
     assert sent["path"] == "/thing?q=x"
+    assert sent_headers(http_server)["accept"] == "application/json"
+
+
+def test_request_sends_default_user_agent(http_server):
+    http_server.route("GET", "/thing", json={})
+
+    with HttpClient() as http:
+        http.request("GET", f"{http_server.url}/thing")
+
+    assert sent_headers(http_server)["user-agent"] == f"pkit/{get_version()}"
+
+
+def test_request_merges_per_call_headers(http_server):
+    http_server.route("GET", "/thing", json={})
+
+    with HttpClient(headers={"Accept": "application/json"}) as http:
+        http.request("GET", f"{http_server.url}/thing", headers={"X-Trace": "1"})
+
+    headers = sent_headers(http_server)
+    assert headers["accept"] == "application/json"
+    assert headers["x-trace"] == "1"
+
+
+def test_request_appends_params_to_existing_query(http_server):
+    http_server.route("GET", "/thing", json={})
+
+    with HttpClient() as http:
+        http.request("GET", f"{http_server.url}/thing?a=1", params={"b": "2"})
+
+    assert http_server.requests[-1]["path"] == "/thing?a=1&b=2"
 
 
 def test_request_posts_form_data(http_server):
@@ -45,6 +81,7 @@ def test_request_posts_form_data(http_server):
     assert response.json() == {"ok": True}
     sent = http_server.requests[-1]
     assert parse_qs(sent["body"]) == {"url": ["http://x"], "flag": ["1"]}
+    assert sent_headers(http_server)["content-type"] == "application/x-www-form-urlencoded"
 
 
 def test_request_maps_http_error_with_body(http_server):
@@ -65,46 +102,54 @@ def test_unrouted_request_is_404(http_server):
     assert exc.value.status_code == 404
 
 
-def test_request_http_error_without_response(monkeypatch):
-    def raise_http_error(method, url, **kwargs):
-        raise requests.HTTPError("boom", response=None)
+def test_response_headers_get_is_case_insensitive(http_server):
+    http_server.route("GET", "/thing", text="ok", headers={"X-Custom-Header": "yes"})
 
     with HttpClient() as http:
-        monkeypatch.setattr(http._session, "request", raise_http_error)
-        with pytest.raises(HttpError) as exc:
-            http.request("GET", "https://example.com/thing")
+        response = http.request("GET", f"{http_server.url}/thing")
 
-    assert exc.value.status_code is None
-    assert "boom" in str(exc.value)
+    assert response.headers.get("x-custom-header") == "yes"
 
 
-def test_request_maps_transport_error(monkeypatch):
-    def raise_timeout(method, url, **kwargs):
-        raise requests.exceptions.ConnectTimeout("timed out")
+def test_response_json_raises_on_non_json_and_empty_bodies(http_server):
+    http_server.route("GET", "/empty", text="")
+    http_server.route("GET", "/plain", text="not json")
 
     with HttpClient() as http:
-        monkeypatch.setattr(http._session, "request", raise_timeout)
-        with pytest.raises(HttpError) as exc:
-            http.request("GET", "https://example.com/thing")
+        empty = http.request("GET", f"{http_server.url}/empty")
+        plain = http.request("GET", f"{http_server.url}/plain")
+
+    with pytest.raises(ValueError):
+        empty.json()
+    with pytest.raises(ValueError):
+        plain.json()
+
+
+def test_request_maps_transport_error():
+    # Port 1 on localhost is never listening: connection refused, no response.
+    with HttpClient() as http, pytest.raises(HttpError) as exc:
+        http.request("GET", "http://127.0.0.1:1/thing")
 
     assert exc.value.status_code is None
 
 
-def test_request_timeout_override_is_forwarded(http_server, monkeypatch):
-    http_server.route("GET", "/thing", json={})
-    sent: dict[str, object] = {}
+def test_request_default_timeout_applies(http_server):
+    http_server.route("GET", "/slow", json={}, delay=1.0)
 
-    with HttpClient(timeout=5.0) as http:
-        real_request = http._session.request
+    with HttpClient(timeout=0.2) as http, pytest.raises(HttpError) as exc:
+        http.request("GET", f"{http_server.url}/slow")
 
-        def spy(method, url, **kwargs):
-            sent.update(kwargs)
-            return real_request(method, url, **kwargs)
+    assert exc.value.status_code is None
 
-        monkeypatch.setattr(http._session, "request", spy)
-        http.request("GET", f"{http_server.url}/thing", timeout=0.5)
 
-    assert sent["timeout"] == 0.5
+def test_request_timeout_override_applies(http_server):
+    """A per-call timeout wins over the (generous) client default."""
+    http_server.route("GET", "/slow", json={}, delay=1.0)
+
+    with HttpClient(timeout=5.0) as http, pytest.raises(HttpError) as exc:
+        http.request("GET", f"{http_server.url}/slow", timeout=0.2)
+
+    assert exc.value.status_code is None
 
 
 def test_download_writes_file(http_server, tmp_path):
@@ -127,11 +172,34 @@ def test_download_maps_http_error(http_server, tmp_path):
     assert not (tmp_path / "gone.bin").exists()
 
 
-def test_context_manager_closes_session(monkeypatch):
+def test_context_manager_closes_client(monkeypatch):
     called = []
     with HttpClient() as http:
-        monkeypatch.setattr(http._session, "close", lambda: called.append(True))
+        monkeypatch.setattr(http, "close", lambda: called.append(True))
     assert called == [True]
+
+
+# --- URL encoding -----------------------------------------------------------
+
+
+def test_request_percent_encodes_unicode_path(http_server):
+    # The route key is the wire form: non-ASCII arrives percent-encoded.
+    http_server.route("GET", "/caf%C3%A9/%E6%BC%A2", text="ok")
+
+    with HttpClient() as http:
+        response = http.request("GET", f"{http_server.url}/café/漢")
+
+    assert response.text == "ok"
+    assert http_server.requests[-1]["path"] == "/caf%C3%A9/%E6%BC%A2"
+
+
+def test_request_idna_encodes_unicode_host():
+    """A non-ASCII host is IDNA-encoded, so the failure is the lookup (an
+    HttpError), not an unencodable request line."""
+    with HttpClient(timeout=1.0) as http, pytest.raises(HttpError) as exc:
+        http.request("GET", "http://exämple.invalid/thing")
+
+    assert exc.value.status_code is None
 
 
 # --- URL rewriting: proxy_prefix -------------------------------------------
@@ -281,7 +349,7 @@ def test_explicit_empty_prefix_disables_config_prefix(tmp_path, monkeypatch):
         assert http.resolve_url("https://example.com/a") == "https://example.com/a"
 
 
-# --- Manual redirect following (only when rewriting is configured) ----------
+# --- Manual redirect following (always; one auth policy) --------------------
 
 
 def test_request_follows_relative_redirect_through_proxy(http_server):
@@ -349,6 +417,24 @@ def test_request_redirect_too_many_hops_raises(http_server):
     assert "too many redirects" in str(exc.value)
 
 
+def test_request_plain_client_follows_redirects_and_drops_cross_host_auth(http_server):
+    """Without any rewriting a plain client redirects manually too, with the
+    same Authorization policy: localhost (a different host) never sees it."""
+    http_server.route(
+        "GET",
+        "/thing",
+        status=302,
+        headers={"Location": f"http://localhost:{http_server.port}/other"},
+    )
+    http_server.route("GET", "/other", text="ok")
+
+    with HttpClient(headers={"Authorization": "LOW key:secret"}) as http:
+        response = http.request("GET", f"{http_server.url}/thing")
+
+    assert response.text == "ok"
+    assert "Authorization" not in http_server.requests[-1]["headers"]
+
+
 def test_request_redirect_keeps_authorization_on_mapped_host(http_server):
     http_server.route("GET", "/thing", status=302, headers={"Location": "http://example.com/other"})
     http_server.route("GET", "/other", text="ok")
@@ -375,7 +461,7 @@ def test_request_redirect_keeps_authorization_across_configured_mirrors(http_ser
         },
         headers={"Authorization": "LOW key:secret"},
     ) as http:
-        response = http.request("GET", "http://example.com/thing", allow_redirects=False)
+        response = http.request("GET", "http://example.com/thing")
 
     assert response.text == "ok"
     assert http_server.requests[-1]["headers"]["Authorization"] == "LOW key:secret"
@@ -428,50 +514,24 @@ def test_request_redirect_with_hostless_proxy_prefix_drops_cross_host_auth(http_
     assert "Authorization" not in http_server.requests[-1]["headers"]
 
 
-def test_request_redirect_drops_authorization_cross_host(http_server, monkeypatch):
-    http_server.route("GET", "/thing", status=302, headers={"Location": "https://evil.com/x"})
+def test_request_redirect_drops_authorization_cross_host(http_server):
+    """A mapped host redirecting to an unrelated host: the hop loses the key."""
+    http_server.route(
+        "GET",
+        "/thing",
+        status=302,
+        headers={"Location": f"http://localhost:{http_server.port}/other"},
+    )
+    http_server.route("GET", "/other", text="ok")
 
     with HttpClient(
         host_map={"example.com": f"127.0.0.1:{http_server.port}"},
         headers={"Authorization": "LOW key:secret"},
     ) as http:
-        real_request = http._session.request
-        calls: list[dict[str, object]] = []
-
-        def spy(method, url, **kwargs):
-            calls.append({"url": url, "headers": kwargs.get("headers")})
-            if len(calls) == 1:
-                return real_request(method, url, **kwargs)
-            response = requests.Response()
-            response.status_code = 200
-            response._content = b"ok"
-            response.headers["Content-Type"] = "text/plain"
-            return response
-
-        monkeypatch.setattr(http._session, "request", spy)
         response = http.request("GET", "http://example.com/thing")
 
     assert response.text == "ok"
-    # The second hop leaves the trusted hosts: Authorization must be None,
-    # which requests removes from the merged headers.
-    assert calls[1]["headers"] == {"Authorization": None}
-
-
-def test_request_without_rewriting_uses_session_redirects(http_server, monkeypatch):
-    http_server.route("GET", "/thing", text="ok")
-    sent: dict[str, object] = {}
-
-    with HttpClient() as http:
-        real_request = http._session.request
-
-        def spy(method, url, **kwargs):
-            sent.update(kwargs)
-            return real_request(method, url, **kwargs)
-
-        monkeypatch.setattr(http._session, "request", spy)
-        http.request("GET", f"{http_server.url}/thing")
-
-    assert "allow_redirects" not in sent
+    assert "Authorization" not in http_server.requests[-1]["headers"]
 
 
 def test_request_maps_transport_error_while_rewriting():
@@ -502,6 +562,9 @@ def test_request_redirect_without_location_returns_response(http_server):
     assert response.text == "stuck"
 
 
+# --- download failure cleanup ------------------------------------------------
+
+
 def test_download_cleans_up_when_the_stream_dies(http_server, tmp_path):
     """A body shorter than its Content-Length aborts and leaves no file."""
     http_server.route(
@@ -517,17 +580,23 @@ def test_download_cleans_up_when_the_stream_dies(http_server, tmp_path):
     assert not (tmp_path / "partial.bin").exists()
 
 
-def test_download_cleans_up_on_unexpected_errors(http_server, monkeypatch, tmp_path):
+def test_download_cleans_up_on_unexpected_errors(patch_transport, tmp_path):
     """Failures beyond HTTP (KeyboardInterrupt, bugs) still leave no partial file."""
 
-    def broken(self, chunk_size):
-        yield b"bytes"
-        raise RuntimeError("boom")
+    class ExplodingBody(io.BytesIO):
+        """Serves one chunk, then dies like a bug mid-stream."""
 
-    monkeypatch.setattr(requests.Response, "iter_content", broken)
-    http_server.route("GET", "/thing", text="bytes")
+        def read(self, size: int | None = -1) -> bytes:
+            if self.tell():
+                raise RuntimeError("boom")
+            return super().read(size)
 
-    with HttpClient() as http, pytest.raises(RuntimeError, match="boom"):
-        http.download(f"{http_server.url}/thing", tmp_path / "partial.bin")
+    def handler(method, url, **kwargs):
+        return Response(200, email.message.Message(), ExplodingBody(b"bytes"))
+
+    with HttpClient() as http:
+        patch_transport(http, handler)
+        with pytest.raises(RuntimeError, match="boom"):
+            http.download("https://example.com/thing", tmp_path / "partial.bin")
 
     assert not (tmp_path / "partial.bin").exists()

@@ -6,22 +6,10 @@
 #
 build==1.6.1
     # via pip-tools
-certifi==2026.10.23
-    # via
-    #   -c requirements.txt
-    #   requests
-charset-normalizer==3.5.2
-    # via
-    #   -c requirements.txt
-    #   requests
 click==8.5.1
     # via pip-tools
 coverage==7.17.3
     # via pytest-cov
-idna==3.20
-    # via
-    #   -c requirements.txt
-    #   requests
 iniconfig==2.3.1
     # via pytest
 packaging==26.3
@@ -47,18 +35,10 @@ pytest==9.2.0
     #   pytest-cov
 pytest-cov==7.1.0
     # via pkit (pyproject.toml)
-requests==2.34.2
-    # via
-    #   -c requirements.txt
-    #   pkit (pyproject.toml)
 ruff==0.17.5
     # via pkit (pyproject.toml)
 ty==0.0.104
     # via pkit (pyproject.toml)
-urllib3==2.8.0
-    # via
-    #   -c requirements.txt
-    #   requests
 wheel==0.48.0
     # via pip-tools
 

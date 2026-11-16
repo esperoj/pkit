@@ -2,15 +2,17 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from tests.conftest import FakeResponse
 
 from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import RemoteFile
 from pkit.archive.wayback import WaybackBackend
-from pkit.lib.http import HttpClient
+from pkit.lib.http import HttpClient, Response
 from pkit.lib.shell import CommandNotFound, ShellError
 from pkit.wayback.client import BASE_URL, CdxCapture, WaybackClient
 
@@ -386,6 +388,16 @@ class TestWaybackBackendRewriting:
             assert backend._http.host_map == {}
         client.close()
 
-    def test_owned_http_has_no_authorization_headers(self):
+    def test_owned_http_has_no_authorization_headers(self, patch_transport):
+        """The owned download transport never carries SPN2 credentials."""
         with WaybackBackend("manga", base_url="https://host") as backend:
-            assert "Authorization" not in backend._http._session.headers
+            seen: list[dict[str, str]] = []
+
+            def handler(method: str, url: str, **kwargs: Any) -> Response:
+                seen.append(kwargs["headers"])
+                return FakeResponse(json={})
+
+            patch_transport(backend._http, handler)
+            backend._http.request("GET", "https://web.archive.org/save/status/user")
+
+        assert all("Authorization" not in headers for headers in seen)

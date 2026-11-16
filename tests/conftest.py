@@ -11,24 +11,26 @@ Only boundaries pkit does not own are faked: the network transport, the
 rclone binary, and remote backends. sqlite and the filesystem stay real.
 """
 
+import email.message
 import http.server
+import io
 import json
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Generator, Iterator, Sequence
 from json import dumps
 from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
 from pkit import archive
 from pkit.archive.cas import Entry, Hashes, hash_file
 from pkit.archive.remote import RemoteFile, Status
 from pkit.lib import Closeable
-from pkit.lib.http import HttpClient, HttpError
+from pkit.lib.http import HttpClient, HttpError, Response
 from pkit.wayback.client import WaybackClient
 
 
@@ -46,8 +48,8 @@ class FakeStdin:
         return self._is_tty
 
 
-class FakeResponse(requests.Response):
-    """A real requests.Response built from kwargs; no socket involved.
+class FakeResponse(Response):
+    """A Response built from kwargs; no socket involved.
 
     json= sets a JSON body, text=/content= set a raw one. .json() then
     raises the real JSONDecodeError (a ValueError) on non-JSON bodies, which
@@ -62,16 +64,15 @@ class FakeResponse(requests.Response):
         text: str = "",
         content: bytes = b"",
     ) -> None:
-        super().__init__()
-        self.status_code = status_code
-        self.encoding = "utf-8"
+        headers = email.message.Message()
         if json is not None:
-            self._content = dumps(json).encode()
-            self.headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = "application/json"
+            body = dumps(json).encode()
         elif content:
-            self._content = content
+            body = content
         else:
-            self._content = text.encode()
+            body = text.encode()
+        super().__init__(status_code, headers, io.BytesIO(body))
 
 
 class FakeHttpClient(HttpClient):
@@ -122,7 +123,7 @@ class FakeHttpClient(HttpClient):
             {"status": status, "json": json, "text": text, "content": content, "error": error}
         )
 
-    def _serve(self, outcome: dict[str, Any], url: str) -> requests.Response:
+    def _serve(self, outcome: dict[str, Any], url: str) -> Response:
         if outcome["error"] is not None:
             raise outcome["error"]
         response = FakeResponse(
@@ -149,7 +150,7 @@ class FakeHttpClient(HttpClient):
                 return self._routes[prefix]
         raise AssertionError(f"unexpected request: {method} {url}")
 
-    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+    def request(self, method: str, url: str, **kwargs: Any) -> Response:
         self.requests.append({"method": method, "url": url, **kwargs})
         return self._serve(self._take(method, url), url)
 
@@ -168,7 +169,7 @@ class FakeHttpClient(HttpClient):
 class _Server(http.server.ThreadingHTTPServer):
     """ThreadingHTTPServer carrying its routes and request log."""
 
-    routes: dict[tuple[str, str], tuple[int, str, str, dict[str, str]]]
+    routes: dict[tuple[str, str], tuple[int, str, str, dict[str, str], float]]
     requests: list[dict[str, Any]]
 
 
@@ -188,21 +189,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         server.requests.append(
             {"method": self.command, "path": self.path, "headers": dict(self.headers), "body": body}
         )
-        status, content_type, payload, extra = server.routes.get(
+        status, content_type, payload, extra, delay = server.routes.get(
             (self.command, self.path.partition("?")[0]),
-            (404, "text/plain", "not found", {}),
+            (404, "text/plain", "not found", {}, 0.0),
         )
+        if delay:
+            time.sleep(delay)
         data = payload.encode() if isinstance(payload, str) else payload
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        # A route may lie about Content-Length to simulate a connection that
-        # dies mid-body: extra headers override the computed one.
-        length = extra.pop("Content-Length", None) or str(len(data))
-        self.send_header("Content-Length", length)
-        for key, value in extra.items():
-            self.send_header(key, value)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            # A route may lie about Content-Length to simulate a connection that
+            # dies mid-body: extra headers override the computed one.
+            length = extra.pop("Content-Length", None) or str(len(data))
+            self.send_header("Content-Length", length)
+            for key, value in extra.items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # Timeout tests disconnect while the route is still sleeping;
+            # writing to a client that walked away is not an error.
+            self.close_connection = True
 
     def do_GET(self) -> None:
         self._serve()
@@ -215,7 +223,7 @@ class LocalServer:
     """A real HTTP server on 127.0.0.1 for transport-level tests."""
 
     def __init__(self) -> None:
-        self.routes: dict[tuple[str, str], tuple[int, str, str, dict[str, str]]] = {}
+        self.routes: dict[tuple[str, str], tuple[int, str, str, dict[str, str], float]] = {}
         self.requests: list[dict[str, Any]] = []
         self._server = _Server(("127.0.0.1", 0), _Handler)
         self._server.routes = self.routes
@@ -244,12 +252,14 @@ class LocalServer:
         json: Any = None,
         text: str = "",
         headers: dict[str, str] | None = None,
+        delay: float = 0.0,
     ) -> None:
+        """Serve one (method, path) route; delay>0 sleeps before responding."""
         if json is not None:
             body, content_type = dumps(json), "application/json"
         else:
             body, content_type = text, "text/plain"
-        self.routes[(method, path)] = (status, content_type, body, dict(headers or {}))
+        self.routes[(method, path)] = (status, content_type, body, dict(headers or {}), delay)
 
     def close(self) -> None:
         self._server.shutdown()
@@ -388,6 +398,22 @@ def run_cli(monkeypatch, capsys, fake_stdin):
 @pytest.fixture
 def fake_http() -> FakeHttpClient:
     return FakeHttpClient()
+
+
+@pytest.fixture
+def patch_transport(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
+    """Install a fake transport under one HttpClient.
+
+    handler(method, url, headers=..., body=..., timeout=...) stands in for
+    the single network call every request passes through. This is the only
+    place in tests/ that knows the seam's name; test behavior, not the
+    transport.
+    """
+
+    def _patch(client: HttpClient, handler: Callable[..., Response]) -> None:
+        monkeypatch.setattr(client, "_send", handler)
+
+    return _patch
 
 
 @pytest.fixture
