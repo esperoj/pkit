@@ -7,8 +7,6 @@ BIN := $(VENV)/bin
 PY := $(BIN)/python
 PIP := $(PY) -m pip
 COMPILE := $(BIN)/pip-compile --strip-extras
-# pipx >= 1.18 defaults to the uv backend; force the pip backend everywhere.
-PIPX_ENV := PIPX_DEFAULT_BACKEND=pip
 
 .PHONY: help
 help: ## Show available make targets.
@@ -39,7 +37,7 @@ dev: venv ## Install locked dev dependencies and pkit (editable) into the venv.
 .PHONY: install
 install: ## Install pkit globally with pipx using locked runtime deps.
 	@test -f requirements.txt || $(MAKE) lock
-	$(PIPX_ENV) $(PIPX) install --force --backend pip --pip-args='--constraint requirements.txt' .
+	$(PIPX) install --force --pip-args='--constraint requirements.txt' .
 
 .PHONY: uninstall
 uninstall: ## Remove the global pkit installation managed by pipx.

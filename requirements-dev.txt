@@ -17,7 +17,7 @@ packaging==26.3
     #   build
     #   pytest
     #   wheel
-pip-tools==7.6.2
+pip-tools==7.7.0
     # via pkit (pyproject.toml)
 pluggy==1.7.0
     # via
@@ -37,7 +37,7 @@ pytest-cov==7.1.0
     # via pkit (pyproject.toml)
 ruff==0.17.5
     # via pkit (pyproject.toml)
-ty==0.0.104
+ty==0.0.105
     # via pkit (pyproject.toml)
 wheel==0.48.0
     # via pip-tools
