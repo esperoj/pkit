@@ -68,7 +68,7 @@ class SaveOptions:
     capture_outlinks: bool = False
     email_result: bool = True
     force_get: bool = True
-    skip_first_archive: bool = True
+    skip_first_archive: bool = False
 
     def to_form_dict(self) -> dict[str, int]:
         """Convert boolean flags to SPN2's integer 0/1 form values."""
