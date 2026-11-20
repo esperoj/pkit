@@ -62,7 +62,7 @@ def test_save_plain_success(run_cli, patch_save_url):
     assert opts.capture_outlinks is False
     assert opts.email_result is True
     assert opts.force_get is True
-    assert opts.skip_first_archive is True
+    assert opts.skip_first_archive is False
 
 
 def test_save_json_success(run_cli, patch_save_url):
@@ -136,7 +136,7 @@ def test_save_reads_json_object_from_stdin(run_cli, patch_save_url):
     assert opts.email_result is False
     assert opts.capture_outlinks is False
     assert opts.force_get is True
-    assert opts.skip_first_archive is True  # untouched default
+    assert opts.skip_first_archive is False
     output = json.loads(out)
     assert output["url"] == "http://json"
 
