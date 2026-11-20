@@ -108,6 +108,9 @@ setup-remotes:
 	@echo "Remotes configured:"
 	@git remote -v
 
+.PHONY: setup
+setup: setup-remotes install
+
 .PHONY: clean
 clean: ## Remove caches and build artifacts.
 	rm -rf .pytest_cache .ruff_cache .coverage coverage.xml htmlcov build dist *.egg-info
