@@ -2,9 +2,15 @@
 # archive-pack — deterministically pack a file or directory for `pkit archive add`.
 #
 # Packs PATH into a reproducible tar.zst (sorted names, epoch mtime, root
-# owner), optionally encrypts it with age, and optionally splits it into
-# fixed-size chunks. Byte-identical inputs produce byte-identical archives,
-# so re-packing never churns the CAS.
+# owner), optionally encrypts it with age, and splits it into fixed-size
+# chunks named FILE.part-001, FILE.part-002, ... — zero padded, so plain
+# lexicographic order is numeric order. Byte-identical inputs produce
+# byte-identical archives, so re-packing never churns the CAS.
+#
+# Defaults suit write-once archives: zstd -19 on all cores, a frame content
+# checksum, and 256M chunks. Chunks and whole archives are ready for
+# `pkit archive add`; `cat FILE.part-* | zstd -d | tar -x` restores them
+# (insert `age -d -i KEY` before zstd for encrypted packs).
 #
 # Usage:
 #   scripts/archive-pack [OPTIONS] PATH
@@ -12,131 +18,215 @@
 # Options:
 #   -o, --output FILE      output name (default: <name>.tar.zst[.age] in .)
 #   -r, --recipient PUB    encrypt to this age public key (repeatable)
-#   -R, --encrypt-pass     encrypt with a passphrase (age -R, interactive)
-#   -s, --split SIZE       split the result into chunks of SIZE (e.g. 100M),
-#                          written as FILE.part-aa, FILE.part-ab, ...
+#   -p, --encrypt-pass     encrypt with a passphrase (age -p, interactive)
+#   -s, --split SIZE       chunk size (default: 256M, at most 999 chunks)
+#   -S, --no-split         write one whole file instead of chunks
+#   -l, --level N          zstd level 1..19 (default: 19)
+#   -j, --threads N        zstd threads, 0 = all cores (default: 0)
 #   -h, --help             show this help
 #
-# Requires: tar (GNU), zstd; age and split only when encryption/splitting is
-# used. Chunks and whole archives are ready for `pkit archive add`.
+# Reproducibility: identical bytes need the same zstd version, level and
+# thread count — multithreaded frames can differ between thread counts, so
+# use --threads 1 for canonical packs that must match across machines.
+# -19 wants a few hundred MB of RAM per worker; cap --threads on small
+# machines. No --long is used, so any plain `zstd -d` decodes the result.
+#
+# Requires: GNU tar, zstd; GNU split unless --no-split; age when encrypting.
 set -euo pipefail
+export LC_ALL=C
 
 need() {
-    command -v "$1" >/dev/null 2>&1 || {
-        echo "archive-pack: missing required tool: $1" >&2
-        exit 2
-    }
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "archive-pack: missing required tool: $1" >&2
+    exit 2
+  }
 }
 
+# Print the whole header comment block, however long it grows.
 usage() {
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -e '1d' -e '/^[^#]/,$d' "$0" | sed 's/^# \{0,1\}//'
 }
 
 output=""
-split_size=""
+split_size="256M"
+level=19
+threads=0
 recipients=()
 passphrase=0
+path=""
 
 while [ $# -gt 0 ]; do
-    case $1 in
-        -o | --output)
-            [ $# -ge 2 ] || { echo "archive-pack: --output needs a value" >&2; exit 2; }
-            output=$2
-            shift 2
-            ;;
-        -r | --recipient)
-            [ $# -ge 2 ] || { echo "archive-pack: --recipient needs a value" >&2; exit 2; }
-            recipients+=("$2")
-            shift 2
-            ;;
-        -R | --encrypt-pass)
-            passphrase=1
-            shift
-            ;;
-        -s | --split)
-            [ $# -ge 2 ] || { echo "archive-pack: --split needs a value" >&2; exit 2; }
-            split_size=$2
-            shift 2
-            ;;
-        -h | --help)
-            usage
-            exit 0
-            ;;
-        --*)
-            echo "archive-pack: unknown option: $1" >&2
-            exit 2
-            ;;
-        *)
-            if [ -n "${path:-}" ]; then
-                echo "archive-pack: unexpected argument: $1" >&2
-                exit 2
-            fi
-            path=$1
-            shift
-            ;;
-    esac
+  case $1 in
+    -o | --output)
+      [ $# -ge 2 ] || { echo "archive-pack: --output needs a value" >&2; exit 2; }
+      output=$2
+      shift 2
+      ;;
+    -r | --recipient)
+      [ $# -ge 2 ] || { echo "archive-pack: --recipient needs a value" >&2; exit 2; }
+      recipients+=("$2")
+      shift 2
+      ;;
+    -p | --encrypt-pass)
+      passphrase=1
+      shift
+      ;;
+    -s | --split)
+      [ $# -ge 2 ] || { echo "archive-pack: --split needs a value" >&2; exit 2; }
+      split_size=$2
+      shift 2
+      ;;
+    -S | --no-split)
+      split_size=""
+      shift
+      ;;
+    -l | --level)
+      [ $# -ge 2 ] || { echo "archive-pack: --level needs a value" >&2; exit 2; }
+      level=$2
+      shift 2
+      ;;
+    -j | --threads)
+      [ $# -ge 2 ] || { echo "archive-pack: --threads needs a value" >&2; exit 2; }
+      threads=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "archive-pack: unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [ -n "$path" ]; then
+        echo "archive-pack: unexpected argument: $1" >&2
+        exit 2
+      fi
+      path=$1
+      shift
+      ;;
+  esac
 done
 
-if [ -z "${path:-}" ]; then
-    usage >&2
-    exit 2
+if [ -z "$path" ]; then
+  usage >&2
+  exit 2
 fi
-if [ ! -e "$path" ]; then
-    echo "archive-pack: no such file or directory: $path" >&2
-    exit 2
+if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+  echo "archive-pack: no such file or directory: $path" >&2
+  exit 2
+fi
+if ! [[ $level =~ ^([1-9]|1[0-9])$ ]]; then
+  echo "archive-pack: invalid level: $level (expected 1..19)" >&2
+  exit 2
+fi
+if ! [[ $threads =~ ^[0-9]{1,3}$ ]]; then
+  echo "archive-pack: invalid threads: $threads (expected 0 for all cores, or 1..999)" >&2
+  exit 2
+fi
+if [ -n "$split_size" ] &&
+  ! [[ $split_size =~ ^[1-9][0-9]*([KMGTPEkmgtpe]([iI]?[bB])?|[bB])?$ ]]; then
+  echo "archive-pack: invalid split size: $split_size (e.g. 256M, 1G; --no-split to disable)" >&2
+  exit 2
+fi
+
+encrypt=0
+if [ "$passphrase" -eq 1 ] || [ "${#recipients[@]}" -gt 0 ]; then
+  encrypt=1
+fi
+if [ "$passphrase" -eq 1 ] && [ "${#recipients[@]}" -gt 0 ]; then
+  echo "archive-pack: cannot combine --recipient and --encrypt-pass" >&2
+  exit 2
 fi
 
 need tar
 need zstd
-if [ "$passphrase" -eq 1 ] || [ "${#recipients[@]}" -gt 0 ]; then
-    need age
+if [ "$encrypt" -eq 1 ]; then
+  need age
 fi
 if [ -n "$split_size" ]; then
-    need split
+  need split
 fi
 
-name=$(basename "$path")
-encrypt=0
-if [ "$passphrase" -eq 1 ] || [ "${#recipients[@]}" -gt 0 ]; then
-    encrypt=1
+# Strip trailing slashes so `dir/` packs as `dir`, then split into
+# parent + name without forking basename/dirname.
+while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
+  path=${path%/}
+done
+name=${path##*/}
+if [ -z "$name" ]; then
+  echo "archive-pack: refusing to pack /" >&2
+  exit 2
 fi
+parent=${path%/*}
+if [ "$parent" = "$path" ]; then
+  parent=.
+elif [ -z "$parent" ]; then
+  parent=/
+fi
+
 if [ -z "$output" ]; then
-    output="${name}.tar.zst"
-    if [ "$encrypt" -eq 1 ]; then
-        output="${output}.age"
-    fi
+  output="${name}.tar.zst"
+  if [ "$encrypt" -eq 1 ]; then
+    output="${output}.age"
+  fi
 fi
 
-# Deterministic archive: name order, epoch mtime, root ownership.
+# With encryption the plaintext tar.zst is a temporary beside the output.
 plain=${output%.age}
 if [ "$encrypt" -eq 1 ] && [ "$plain" = "$output" ]; then
-    plain="${output}.tmp.tar.zst"
-fi
-if [ -e "$output" ] || { [ "$encrypt" -eq 1 ] && [ -e "$plain" ]; }; then
-    echo "archive-pack: refusing to overwrite existing file: $output" >&2
-    exit 2
+  plain="${output}.tmp.tar.zst"
 fi
 
-parent=$(dirname "$path")
-tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --zstd \
-    -cf "$plain" -C "$parent" "$name"
+for existing in "$output" "$plain" "$output".part-*; do
+  if [ -e "$existing" ]; then
+    echo "archive-pack: refusing to overwrite existing file: $existing" >&2
+    exit 2
+  fi
+done
+
+# Only arm cleanup after the clobber checks: everything below is ours.
+cleanup() {
+  rc=$?
+  trap - EXIT
+  if [ "$rc" -ne 0 ]; then
+    rm -f -- "$plain" "$output" "$output".part-* 2>/dev/null || :
+    echo "archive-pack: failed (exit $rc); removed partial output" >&2
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+
+# Deterministic archive: pinned format, name order, epoch mtime, root
+# ownership, no ACL/xattr/SELinux drift from system tar defaults.
+# Compression: write-once level, all cores, content checksum for bit-rot.
+tar --format=gnu --sort=name --mtime='UTC 1970-01-01' \
+  --owner=0 --group=0 --numeric-owner \
+  --no-acls --no-selinux --no-xattrs \
+  -cf - -C "$parent" "$name" |
+  zstd -q "-${level}" "-T${threads}" --check --stdout >"$plain"
 
 if [ "$encrypt" -eq 1 ]; then
-    age_args=(age)
+  age_args=(age)
+  if [ "${#recipients[@]}" -gt 0 ]; then
     for recipient in "${recipients[@]}"; do
-        age_args+=(-r "$recipient")
+      age_args+=(-r "$recipient")
     done
-    if [ "$passphrase" -eq 1 ]; then
-        age_args+=(-R)
-    fi
-    "${age_args[@]}" -o "$output" "$plain"
-    rm -- "$plain"
+  fi
+  if [ "$passphrase" -eq 1 ]; then
+    age_args+=(-p)
+  fi
+  "${age_args[@]}" -o "$output" "$plain"
+  rm -- "$plain"
 fi
 
 if [ -n "$split_size" ]; then
-    split -b "$split_size" "$output" "${output}.part-"
-    rm -- "$output"
-    echo "packed $path -> ${output}.part-*"
+  split -b "$split_size" --numeric-suffixes=1 -a 3 -- "$output" "${output}.part-"
+  rm -- "$output"
+  parts=("$output".part-*)
+  last=$(printf '%03d' "${#parts[@]}")
+  echo "packed $path -> ${output}.part-001 .. ${output}.part-${last} (${#parts[@]} chunks of $split_size)"
 else
-    echo "packed $path -> $output"
+  echo "packed $path -> $output"
 fi
