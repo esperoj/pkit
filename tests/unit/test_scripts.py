@@ -50,7 +50,10 @@ def run_script(script, *args, path=None, cwd=None, env=None):
         run_env.update(env)
     return subprocess.run(
         [BASH, str(SCRIPTS / script), *args],
-        check=False, capture_output=True, text=True, env=run_env,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=run_env,
         cwd=None if cwd is None else str(cwd),
     )
 
@@ -75,9 +78,12 @@ def stub_tool(tmp_path: Path, name: str, body: str) -> None:
 
 
 def tar_supports(flag: str) -> bool:
-    return subprocess.run(
-        ["tar", flag, "-cf", os.devnull, "-T", os.devnull], capture_output=True
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["tar", flag, "-cf", os.devnull, "-T", os.devnull], capture_output=True
+        ).returncode
+        == 0
+    )
 
 
 def tree(tmp_path: Path) -> Path:
@@ -129,9 +135,11 @@ def decode(data: bytes, identity: Path | None = None) -> bytes:
 
 
 def members(tar_bytes: bytes) -> list[str]:
-    return subprocess.run(
-        ["tar", "-tf", "-"], input=tar_bytes, capture_output=True, check=True
-    ).stdout.decode().splitlines()
+    return (
+        subprocess.run(["tar", "-tf", "-"], input=tar_bytes, capture_output=True, check=True)
+        .stdout.decode()
+        .splitlines()
+    )
 
 
 def unpack(data: bytes, dest: Path, identity: Path | None = None, extra=()) -> list[str]:
@@ -140,7 +148,9 @@ def unpack(data: bytes, dest: Path, identity: Path | None = None, extra=()) -> l
     dest.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["tar", "-xpf", "-", *extra, "-C", str(dest)],
-        input=tar_bytes, capture_output=True, check=True,
+        input=tar_bytes,
+        capture_output=True,
+        check=True,
     )
     return sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if not p.is_dir())
 
@@ -193,7 +203,8 @@ class TestMetaDiffFzf:
 
     def test_missing_repo_directory_fails_cleanly(self, tmp_path):
         result = run_script(
-            "meta-diff-fzf", str(tmp_path / "nope"),
+            "meta-diff-fzf",
+            str(tmp_path / "nope"),
             path=restricted_path(tmp_path, "git", "python3"),
         )
         assert result.returncode == 2
@@ -206,7 +217,11 @@ class TestMetaDiffFzf:
             json.dumps([{"id": "p1", "type": "person", "name": "Jun M."}]) + "\n", encoding="utf-8"
         )
         result = run_script(
-            "meta-diff-fzf", "--preview", "persons", "p1", str(repo),
+            "meta-diff-fzf",
+            "--preview",
+            "persons",
+            "p1",
+            str(repo),
             path=restricted_path(tmp_path, "git", "python3"),
         )
         assert result.returncode == 0, result.stderr
@@ -275,8 +290,18 @@ class TestArchivePackArguments:
     def test_help_documents_defaults_and_restore(self):
         result = run_script("archive-pack", "--help")
         assert result.returncode == 0
-        for text in ("256M", "part-001", "default: 19", "0 = all cores", "--no-split",
-                     "--no-verify", "top folder", "--same-owner", "numeric ids", "--xattrs"):
+        for text in (
+            "256M",
+            "part-001",
+            "default: 19",
+            "0 = all cores",
+            "--no-split",
+            "--no-verify",
+            "top folder",
+            "--same-owner",
+            "numeric ids",
+            "--xattrs",
+        ):
             assert text in result.stdout, text
 
 
@@ -302,7 +327,9 @@ class TestArchivePackDependencies:
     @pytest.mark.parametrize("flags", [["-r", "age1x"], ["-p"]])
     def test_missing_age_fails_cleanly(self, tmp_path, flags):
         result = run_script(
-            "archive-pack", *flags, str(tree(tmp_path)),
+            "archive-pack",
+            *flags,
+            str(tree(tmp_path)),
             path=restricted_path(tmp_path, "tar", "zstd", "split"),
         )
         assert result.returncode == 2
@@ -383,7 +410,8 @@ class TestArchivePackVerify:
         out = tmp_path / "out.tar.zst"
         path = restricted_path(tmp_path, "zstd", "split", "rm", "mv")
         stub_tool(
-            tmp_path, "tar",
+            tmp_path,
+            "tar",
             'for a in "$@"; do if [ "$a" = "--compare" ]; then exit 1; fi; done\n'
             f'exec {real_tar} "$@"\n',
         )
@@ -401,7 +429,10 @@ class TestArchivePackPreservation:
         assert run_script("archive-pack", "-o", str(out), str(source)).returncode == 0
         dest = tmp_path / "restored"
         assert unpack(out.read_bytes(), dest) == [
-            "book/a.txt", "book/hard.txt", "book/link.txt", "book/sub/b.txt"
+            "book/a.txt",
+            "book/hard.txt",
+            "book/link.txt",
+            "book/sub/b.txt",
         ]
         restored = dest / "book" / "a.txt"
         assert restored.stat().st_mtime_ns == NS
@@ -485,7 +516,8 @@ class TestArchivePackOutput:
         assert not out.exists()
         dest = tmp_path / "restored"
         assert unpack(b"".join(p.read_bytes() for p in parts), dest) == [
-            "book/random.bin", "book/words.txt"
+            "book/random.bin",
+            "book/words.txt",
         ]
         assert (dest / "book" / "random.bin").read_bytes() == (source / "random.bin").read_bytes()
 
@@ -493,8 +525,8 @@ class TestArchivePackOutput:
         out = tmp_path / "out.tar.zst"
         assert run_script("archive-pack", "-o", str(out), str(tree(tmp_path))).returncode == 0
         data = out.read_bytes()
-        assert data[:4] == b"\x28\xb5\x2f\xfd"          # zstd magic
-        assert data[4] & 0x04                            # content-checksum flag
+        assert data[:4] == b"\x28\xb5\x2f\xfd"  # zstd magic
+        assert data[4] & 0x04  # content-checksum flag
         assert subprocess.run(["zstd", "--test", str(out)], capture_output=True).returncode == 0
 
     def test_level_flag_is_honoured(self, tmp_path):
@@ -515,7 +547,9 @@ class TestArchivePackOutput:
     def test_refuses_to_overwrite_existing_chunk(self, tmp_path):
         chunk = tmp_path / "out.tar.zst.part-001"
         chunk.write_bytes(b"keep me")
-        result = run_script("archive-pack", "-o", str(tmp_path / "out.tar.zst"), str(tree(tmp_path)))
+        result = run_script(
+            "archive-pack", "-o", str(tmp_path / "out.tar.zst"), str(tree(tmp_path))
+        )
         assert result.returncode == 2
         assert "refusing to overwrite" in result.stderr
         assert chunk.read_bytes() == b"keep me"
@@ -526,22 +560,30 @@ class TestArchivePackOutput:
 class TestArchivePackEncryption:
     @pytest.mark.parametrize(
         "flags,expected",
-        [(["-p"], ["-p"]), (["-r", "age1aaa", "-r", "age1bbb"], ["-r", "age1aaa", "-r", "age1bbb"])],
+        [
+            (["-p"], ["-p"]),
+            (["-r", "age1aaa", "-r", "age1bbb"], ["-r", "age1aaa", "-r", "age1bbb"]),
+        ],
     )
     def test_age_flags_and_temp_cleanup(self, tmp_path, flags, expected):
         out, log = tmp_path / "out.tar.zst.age", tmp_path / "age-args.txt"
         path = restricted_path(tmp_path, "tar", "zstd", "split", "rm", "mv")
         stub_tool(tmp_path, "age", AGE_STUB)
         result = run_script(
-            "archive-pack", *flags, "-o", str(out), str(tree(tmp_path)),
-            path=path, env={"AGE_STUB_LOG": str(log)},
+            "archive-pack",
+            *flags,
+            "-o",
+            str(out),
+            str(tree(tmp_path)),
+            path=path,
+            env={"AGE_STUB_LOG": str(log)},
         )
         assert result.returncode == 0, result.stderr
         logged = log.read_text(encoding="utf-8").splitlines()
         assert logged[: len(expected)] == expected
-        assert "-R" not in logged                        # age -R is recipients-file
+        assert "-R" not in logged  # age -R is recipients-file
         assert out.is_file()
-        assert not (tmp_path / "out.tar.zst").exists()    # plaintext temp removed
+        assert not (tmp_path / "out.tar.zst").exists()  # plaintext temp removed
 
     @needs_age
     def test_encrypted_chunks_round_trip(self, tmp_path):
@@ -564,9 +606,10 @@ class TestArchivePackEncryption:
         assert not out.exists()
         assert not (tmp_path / "out.tar.zst").exists()
         dest = tmp_path / "restored"
-        assert unpack(
-            b"".join(p.read_bytes() for p in parts), dest, identity=identity
-        ) == ["book/random.bin", "book/words.txt"]
+        assert unpack(b"".join(p.read_bytes() for p in parts), dest, identity=identity) == [
+            "book/random.bin",
+            "book/words.txt",
+        ]
         assert (dest / "book" / "random.bin").read_bytes() == (source / "random.bin").read_bytes()
 
 
@@ -591,7 +634,8 @@ class TestArchiveVerifySweep:
         empty = tmp_path / "tree"
         empty.mkdir()
         result = run_script(
-            "archive-verify-sweep", str(empty),
+            "archive-verify-sweep",
+            str(empty),
             path=restricted_path(tmp_path, "find", "sed", "grep", "sort", "awk"),
         )
         assert result.returncode == 1
@@ -602,7 +646,8 @@ class TestArchiveVerifySweep:
         tree_dir.mkdir()
         (tree_dir / "obj").symlink_to("../cas/" + "a" * 64)
         result = run_script(
-            "archive-verify-sweep", str(tree_dir),
+            "archive-verify-sweep",
+            str(tree_dir),
             path=restricted_path(tmp_path, "find", "sed", "grep", "sort", "awk"),
         )
         assert result.returncode == 2

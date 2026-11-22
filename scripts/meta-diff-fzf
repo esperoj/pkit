@@ -17,20 +17,23 @@ self=${BASH_SOURCE[0]}
 repo=${PKIT_META_REPO:-records}
 
 need() {
-    command -v "$1" >/dev/null 2>&1 || {
-        echo "meta-diff-fzf: missing required tool: $1" >&2
-        exit 2
-    }
+	command -v "$1" >/dev/null 2>&1 || {
+		echo "meta-diff-fzf: missing required tool: $1" >&2
+		exit 2
+	}
 }
 
 usage() {
-    sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//'
+	sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//'
 }
 
 # --- dispatch: preview mode (called by fzf) -------------------------------
 if [ "${1:-}" = "--preview" ]; then
-    [ $# -eq 4 ] || { echo "meta-diff-fzf: usage: $0 --preview TABLE ID REPO" >&2; exit 2; }
-    exec python3 - preview "$2" "$3" "$4" <<'PY'
+	[ $# -eq 4 ] || {
+		echo "meta-diff-fzf: usage: $0 --preview TABLE ID REPO" >&2
+		exit 2
+	}
+	exec python3 - preview "$2" "$3" "$4" <<'PY'
 import difflib
 import json
 import subprocess
@@ -82,40 +85,41 @@ fi
 
 # --- normal mode: list changes, browse in fzf ------------------------------
 while [ $# -gt 0 ]; do
-    case $1 in
-        -h | --help)
-            usage
-            exit 0
-            ;;
-        --*)
-            echo "meta-diff-fzf: unknown option: $1" >&2
-            exit 2
-            ;;
-        *)
-            if [ -n "${repo_set:-}" ]; then
-                echo "meta-diff-fzf: unexpected argument: $1" >&2
-                exit 2
-            fi
-            repo=$1
-            repo_set=1
-            shift
-            ;;
-    esac
+	case $1 in
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--*)
+		echo "meta-diff-fzf: unknown option: $1" >&2
+		exit 2
+		;;
+	*)
+		if [ -n "${repo_set:-}" ]; then
+			echo "meta-diff-fzf: unexpected argument: $1" >&2
+			exit 2
+		fi
+		repo=$1
+		repo_set=1
+		shift
+		;;
+	esac
 done
 
 need git
 need python3
 
 if [ ! -d "$repo" ]; then
-    echo "meta-diff-fzf: no such repo directory: $repo" >&2
-    exit 2
+	echo "meta-diff-fzf: no such repo directory: $repo" >&2
+	exit 2
 fi
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || {
-    echo "meta-diff-fzf: not a git repository: $repo" >&2
-    exit 2
+	echo "meta-diff-fzf: not a git repository: $repo" >&2
+	exit 2
 }
 
-changes=$(python3 - list "$repo" <<'PY'
+changes=$(
+	python3 - list "$repo" <<'PY'
 import json
 import subprocess
 import sys
@@ -175,14 +179,14 @@ PY
 )
 
 if [ -z "$changes" ]; then
-    echo "meta-diff-fzf: no record changes between HEAD and the working tree" >&2
-    exit 1
+	echo "meta-diff-fzf: no record changes between HEAD and the working tree" >&2
+	exit 1
 fi
 
 need fzf
 
 printf '%s\n' "$changes" | fzf \
-    --delimiter='\t' \
-    --with-nth=1,2,3,4 \
-    --header='table  id  status  label  (enter: print selection)' \
-    --preview="'$self' --preview {1} {2} '$repo'"
+	--delimiter='\t' \
+	--with-nth=1,2,3,4 \
+	--header='table  id  status  label  (enter: print selection)' \
+	--preview="'$self' --preview {1} {2} '$repo'"
