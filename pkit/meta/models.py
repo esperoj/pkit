@@ -212,7 +212,9 @@ class File(Record):
     machines. sha256, sha1 and md5 live in dedicated indexed columns on
     files; identifiers carries external IDs only. id defaults to "" so a
     probe instance (File(sha1=...)) never mints a random UUID — put()
-    still enforces the id shape through the table's CHECK. locations are
+    still enforces the id shape through the table's CHECK. name is the tree
+    name add first saw the content under — the CAS strips names, the record
+    remembers one (first add wins, so records stay stable). locations are
     remote copies only — local presence lives in the filesystem.
     """
 
@@ -221,6 +223,7 @@ class File(Record):
     unique: ClassVar[tuple[str, ...]] = ("id", "slug", "sha256", "sha1", "md5")
 
     id: str = ""
+    name: str = ""
     size: int = 0
     sha256: str = ""
     sha1: str = ""

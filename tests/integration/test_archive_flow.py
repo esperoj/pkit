@@ -33,20 +33,21 @@ def test_lifecycle_through_the_sdk(repo, db_path, install_backend):
     assert copied.locations == ("ia:ph/v1.cbz",)
     assert backend.store["ia:ph/v1.cbz"] == PAYLOAD
 
-    verified = archive.verify(item, db_path=db_path)
+    (verified,) = archive.verify(item, db_path=db_path)
     assert [(check.location, check.status) for check in verified.checks] == [
         ("local", "ok"),
         ("ia:ph/v1.cbz", "ok"),
     ]
 
-    dropped = archive.drop(item, db_path=db_path)
+    (dropped,) = archive.drop(item, db_path=db_path)
     assert dropped.location == "ia:ph/v1.cbz"
     assert not obj.exists()
     assert item.is_symlink() and not os.path.exists(item)  # the name survives, dangling
 
-    assert archive.verify(item, db_path=db_path).ok is False  # local is missing now
+    (missing,) = archive.verify(item, db_path=db_path)
+    assert missing.ok is False  # local is missing now
 
-    restored = archive.get(item, db_path=db_path)
+    (restored,) = archive.get(item, db_path=db_path)
     assert restored.location == "ia:ph/v1.cbz"
     assert obj.read_bytes() == PAYLOAD
     assert item.read_bytes() == PAYLOAD
@@ -152,9 +153,9 @@ def test_get_finds_copies_not_recorded_as_locations(repo, db_path, install_backe
     backend.files.append(RemoteFile("ia:x/elsewhere.cbz", hashes.identifiers))
     backend.store["ia:x/elsewhere.cbz"] = PAYLOAD
 
-    restored = archive.get(item, remote="ia:x", db_path=db_path)
+    (result,) = archive.get(item, remote="ia:x", db_path=db_path)
 
-    assert restored.location == "ia:x/elsewhere.cbz"
+    assert result.location == "ia:x/elsewhere.cbz"
     assert item.read_bytes() == PAYLOAD
 
 
@@ -165,7 +166,7 @@ def test_verify_without_local_cas_reports_unknown(db_path, tmp_path, monkeypatch
         meta.put(File(id=f"sha256:{sha256}", size=3, sha256=sha256))
     monkeypatch.chdir(tmp_path)  # tmp_path has no .git above it
 
-    result = archive.verify(f"sha256:{sha256}", db_path=db_path, remotes=())
+    (result,) = archive.verify(f"sha256:{sha256}", db_path=db_path, remotes=())
 
     assert [(check.location, check.status) for check in result.checks] == [("local", "unknown")]
 
@@ -215,13 +216,13 @@ def test_get_by_record_id_never_touches_a_tree(repo, db_path, install_backend):
 
     # Local copy present: returned as-is, no link juggling. A record id has
     # no tree of its own, so the CAS directory is passed explicitly.
-    assert archive.get(hashes.record_id, db_path=db_path, cas_dir=cas_dir).location == "local"
+    assert archive.get(hashes.record_id, db_path=db_path, cas_dir=cas_dir)[0].location == "local"
 
     obj.unlink()
     backend.files.append(RemoteFile("ia:x/elsewhere.cbz", hashes.identifiers))
     backend.store["ia:x/elsewhere.cbz"] = PAYLOAD
 
-    restored = archive.get(hashes.record_id, remote="ia:x", db_path=db_path, cas_dir=cas_dir)
+    (restored,) = archive.get(hashes.record_id, remote="ia:x", db_path=db_path, cas_dir=cas_dir)
 
     assert restored.location == "ia:x/elsewhere.cbz"
     assert obj.read_bytes() == PAYLOAD

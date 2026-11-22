@@ -370,8 +370,9 @@ def test_get_mapping_probe_without_type(db):
     # a record_type hint narrows the probe to that model's table
     record = db.get({"sha1": SHA1}, record_type="file")
     assert isinstance(record, File)
+    assert db.get({"name": "Jun"}, record_type="file") is None  # file has a name too
     with pytest.raises(ValueError, match="not a queryable field on file"):
-        db.get({"name": "Jun"}, record_type="file")
+        db.get({"gender": "f"}, record_type="file")
 
 
 def test_get_mapping_probe_with_unknown_type(db):
@@ -519,7 +520,7 @@ def test_migrations_apply_once(tmp_path):
     with MetaDB(path) as meta:
         count = meta.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
 
-    assert count == 6
+    assert count == 7
 
 
 def test_migrations_create_expected_indexes(tmp_path):
@@ -717,6 +718,7 @@ def test_migrate_method_applies_and_reports(tmp_path):
         "0004_software.sql",
         "0005_video.sql",
         "0006_sound.sql",
+        "0007_file_name.sql",
     ]
     with MetaDB(path, auto_migrate=False) as db:
         assert db.migrate() == []
@@ -761,7 +763,7 @@ def test_migrate_skips_concurrently_applied(tmp_path, monkeypatch):
     assert applied == []
     with MetaDB(path, readonly=True) as db:
         count = db.conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
-    assert count == 6
+    assert count == 7
 
 
 def test_connect_executes_zero_writes_when_current(tmp_path, monkeypatch):
@@ -973,7 +975,7 @@ def test_model_derives_unique_and_array_fields():
     assert "extra" in Person.json_fields
     assert "extra" not in Person.array_fields
     assert File.array_fields == ("identifiers", "locations")
-    assert File.scalar_fields == ("size", "sha256", "sha1", "md5")
+    assert File.scalar_fields == ("name", "size", "sha256", "sha1", "md5")
 
 
 def test_record_model_rejects_unqueryable_unique():

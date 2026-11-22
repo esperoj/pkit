@@ -71,10 +71,11 @@ def migrate(conn: sqlite3.Connection, migrations_dir: str | Path | None) -> list
 
     WAL journaling is enabled best-effort (read-only or locked databases
     keep their current mode). Each file runs inside BEGIN IMMEDIATE with its
-    _migrations bookkeeping; the primary key re-checks the applied set
-    inside the transaction, so concurrent migrators are safe — the loser's
-    re-run rolls back whole on the duplicate insert. Migration files must
-    not contain BEGIN/COMMIT and must end statements with ';'.
+    _migrations bookkeeping inserted first; the primary key re-checks the
+    applied set inside the transaction, so concurrent migrators are safe —
+    the loser aborts on the duplicate insert before any schema statement
+    runs, and a body never executes twice. Migration files must not contain
+    BEGIN/COMMIT and must end statements with ';'.
     """
     pending = pending_migrations(conn, migrations_dir)
     if not pending:
@@ -90,14 +91,17 @@ def migrate(conn: sqlite3.Connection, migrations_dir: str | Path | None) -> list
     )
     newly: list[str] = []
     for file_path in pending:
-        # Schema change and bookkeeping row commit together: no crash window
-        # where a migration is applied but unrecorded.
+        # Bookkeeping first, schema second, one transaction: the primary key
+        # re-checks the applied set inside the transaction, so the loser of a
+        # concurrent migrate aborts before any schema statement runs —
+        # migration bodies never run twice, so they need not be re-runnable.
         name = file_path.name.replace("'", "''")
         try:
             conn.executescript(
                 "BEGIN IMMEDIATE;\n"
+                + f"INSERT INTO _migrations(name) VALUES ('{name}');\n"
                 + file_path.read_text(encoding="utf-8")
-                + f"\nINSERT INTO _migrations(name) VALUES ('{name}');\nCOMMIT;"
+                + "\nCOMMIT;"
             )
         except sqlite3.IntegrityError:
             # A concurrent migrator recorded it while we waited on the

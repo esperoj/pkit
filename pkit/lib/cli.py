@@ -79,6 +79,15 @@ def read_stdin_payload(
     return str(payload), {}
 
 
+def _jsonable(result: Any) -> Any:
+    """A dataclass — or a sequence of them — as JSON-ready data."""
+    if is_dataclass(result):
+        return asdict(result)
+    if isinstance(result, (list, tuple)):
+        return [_jsonable(item) for item in result]
+    return result
+
+
 def emit_result(
     result: Any,
     *,
@@ -88,11 +97,11 @@ def emit_result(
     """Emit a result in either JSON or plain Unix output.
 
     For plain output, the `plain` callback should return the single string
-    that should be printed to stdout.
+    that should be printed to stdout. For JSON, a dataclass, a sequence of
+    dataclasses, or ready-made JSON data all work.
     """
     if json_output:
-        payload = asdict(result) if is_dataclass(result) else result
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(_jsonable(result), indent=2))
         return
 
     value = plain(result)

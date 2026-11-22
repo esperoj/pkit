@@ -12,7 +12,8 @@ Personal archive manager, inspired by git-annex. A library and a thin CLI.
 
 Tree entries are *relative symlinks* into the CAS. The target basename is the
 hash, so renames, moves and a changed CAS root never lose identity. Local paths
-are never stored in the database.
+are never stored in the database; the record keeps only ~name~, the tree name
+~add~ first saw the content under.
 
 Objects are read-only from creation. Permissions stop mutation; the location
 log stops deletion.
@@ -39,11 +40,11 @@ pkit archive add PATH...               # ingest: CAS, symlinks, records
 pkit archive fix PATH                  # re-point links, re-assert perms
 pkit archive copy PATH REMOTE          # transfer missing, register
 pkit archive match REMOTE              # register known content, no transfer
-pkit archive verify FILE [REMOTE...]   # report local + remote integrity
+pkit archive verify PATH [REMOTE...]   # report local + remote integrity
 pkit archive drop PATH                 # delete local copy once a remote is proven
-pkit archive get FILE [REMOTE]         # restore a verified copy
+pkit archive get PATH [REMOTE]         # restore a verified copy
 pkit archive forget PATH               # delete records for dangling links
-pkit archive remove-location FILE LOCATION
+pkit archive remove-location PATH LOCATION
 #+end_src
 
 Every command takes ~--json~ for structured output. Plain output is one
@@ -58,19 +59,21 @@ config; the CAS root is found by walking up to ~.git~ (override with
 
 | Function                          | Purpose                                                                 |
 |-----------------------------------+-------------------------------------------------------------------------|
-| ~add(path)~                       | hash, move into CAS, symlink, register. Never follows foreign symlinks. |
+| ~add(path)~                       | hash, move into CAS, symlink, register (records ~name~). Never follows foreign symlinks. |
 | ~fix(path)~                       | re-point links at the current CAS, re-assert ~0444~. No DB, no network. |
 | ~copy(path, remote)~              | list dest once, transfer only missing, register. Meaningful names.      |
 | ~match(remote)~                   | list dest once, register hashes already known. No transfer.             |
-| ~verify(file, remotes=())~        | report ~ok~ / ~mismatch~ / ~missing~ / ~unknown~. Never prunes.         |
+| ~verify(path, remotes=())~        | report ~ok~ / ~mismatch~ / ~missing~ / ~unknown~ per record. Never prunes. |
 | ~drop(path)~                      | verify one remote live, then delete the object. Link stays dangling.    |
-| ~get(file, remote=None)~          | restore an object; the download is verified before it enters the CAS.   |
+| ~get(path, remote=None)~          | restore an object; the download is verified before it enters the CAS.   |
 | ~forget(path)~                    | delete records for dangling links. Refuses while the object exists.     |
-| ~remove_location(file, location)~ | manual cleanup after a verify report.                                   |
+| ~remove_location(path, location)~ | manual cleanup after a verify report.                                   |
 
-~file~ accepts a tree path (even dangling), a CAS path, or a ~sha256:<hex>~ id.
-~verify~ treats ~"local"~ as a pseudo-location, so remote-only checks need no
-local content.
+Every path argument accepts a tree (one result per CAS link under it), a
+single file (even dangling), a CAS path, or a ~sha256:<hex>~ id.
+~verify~, ~drop~, ~get~ and ~remove_location~ return a tuple of per-record
+results. ~verify~ treats ~"local"~ as a pseudo-location, so remote-only
+checks need no local content.
 
 All functions accept ~db_path=~ and ~cas_dir=~ overrides; remote ones also accept
 ~config_path=~.

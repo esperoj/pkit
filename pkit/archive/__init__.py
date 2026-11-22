@@ -3,8 +3,10 @@
 Three layers, three truths:
   git         names, directory layout, history (symlinks are committed)
   filesystem  local content presence (.git/pkit-archive objects)
-  meta db     content identity plus remote locations (dump/load syncs machines)
+  meta db     content identity (hashes, first tree name) + remote locations
 
+Every command takes a tree path and works on the CAS links under it; a
+single file, a CAS path or a "sha256:<hex>" id addresses one record.
 Library only: results are dataclasses, failures raise typed exceptions.
 """
 
@@ -135,14 +137,22 @@ def _backend(remote: str, wayback_url: str) -> RcloneBackend | WaybackBackend:
     return RcloneBackend(remote)
 
 
-def _record_id(value: str | Path) -> str:
+def _record_ids(value: str | Path) -> tuple[str, ...]:
+    """Resolve an input to record ids; a tree yields one per CAS link.
+
+    A hash id, a CAS object path or a single link is one id. A tree with
+    no CAS links resolves to nothing; an unresolvable input raises.
+    """
     digest = str(value).removeprefix("sha256:")
     if is_hash(digest):
-        return f"sha256:{digest}"
+        return (f"sha256:{digest}",)
     path = abs_path(value)
     named = link_hash(path) or (path.name if is_hash(path.name) else None)
     if named:
-        return f"sha256:{named}"
+        return (f"sha256:{named}",)
+    if path.is_dir() and not path.is_symlink():
+        found = {named for item in walk_files(path) if (named := link_hash(item)) is not None}
+        return tuple(f"sha256:{item}" for item in sorted(found))
     raise InputError(f"cannot resolve a content hash from {value}")
 
 
@@ -172,7 +182,7 @@ def add(
                     stored.sha256 and stored.sha1 and stored.md5
                 )
                 if stale:
-                    db.file_record(hash_file(obj), obj.stat().st_size)
+                    db.file_record(hash_file(obj), obj.stat().st_size, item.name)
                     db.commit()
                 if make_link(item, obj):
                     relinked += 1
@@ -181,7 +191,7 @@ def add(
             hashes = hash_file(item)
             obj = ingest(item, cas, hashes)
             make_link(item, obj)
-            db.file_record(hashes, size)
+            db.file_record(hashes, size, item.name)
             db.commit()
             added += 1
     return AddResult(added=added, relinked=relinked, skipped=skipped)
@@ -217,46 +227,51 @@ def drop(
     db_path: str | Path | None = None,
     cas_dir: str | Path | None = None,
     config_path: str | Path | None = None,
-) -> DropResult:
-    """Delete the local object after proving one remote copy still exists.
+) -> tuple[DropResult, ...]:
+    """Delete local objects after proving one remote copy still exists.
 
-    The symlink is left dangling: it remembers the name and the hash.
+    A tree path drops every CAS link under it; the first refusal wins and
+    already-dropped objects stay dropped. The symlinks are left dangling:
+    they remember the name and the hash.
     """
-    target = abs_path(path)
-    cas = find_cas(target, cas_dir)
-    record_id = _record_id(path)
-    obj = cas_path(cas, record_id.removeprefix("sha256:"))
-    if not obj.exists():
-        raise InputError(f"no local copy of {record_id}")
+    cas = find_cas(abs_path(path), cas_dir)
+    results: list[DropResult] = []
     with ArchiveDB(db_path) as db:
-        record = db.load_file(record_id)
-        if not record.locations:
-            raise ArchiveError(f"{record_id} has no remote copy; refusing to drop")
-        hashes = hashes_of(record)
-        has_wayback = any(loc.startswith(WAYBACK) for loc in record.locations)
-        url = _wayback_url(config_path) if has_wayback else ""
-        transient: TransientError | None = None
-        last_error: ArchiveError | None = None
-        checked = False
-        for location in record.locations:
-            try:
-                with _backend(location, url) as backend:
-                    status = backend.verify(location, hashes)
-            except TransientError as exc:
-                transient = exc
-                continue
-            except ArchiveError as exc:
-                last_error = exc
-                continue
-            checked = True
-            if status == "ok":
-                obj.unlink()
-                return DropResult(record_id=record_id, location=location)
-    if transient is not None:
-        raise transient
-    if not checked and last_error is not None:
-        raise last_error
-    raise ArchiveError(f"no remote copy of {record_id} verified; refusing to drop")
+        for record_id in _record_ids(path):
+            obj = cas_path(cas, record_id.removeprefix("sha256:"))
+            if not obj.exists():
+                raise InputError(f"no local copy of {record_id}")
+            record = db.load_file(record_id)
+            if not record.locations:
+                raise ArchiveError(f"{record_id} has no remote copy; refusing to drop")
+            hashes = hashes_of(record)
+            has_wayback = any(loc.startswith(WAYBACK) for loc in record.locations)
+            url = _wayback_url(config_path) if has_wayback else ""
+            transient: TransientError | None = None
+            last_error: ArchiveError | None = None
+            checked = False
+            for location in record.locations:
+                try:
+                    with _backend(location, url) as backend:
+                        status = backend.verify(location, hashes)
+                except TransientError as exc:
+                    transient = exc
+                    continue
+                except ArchiveError as exc:
+                    last_error = exc
+                    continue
+                checked = True
+                if status == "ok":
+                    obj.unlink()
+                    results.append(DropResult(record_id=record_id, location=location))
+                    break
+            else:
+                if transient is not None:
+                    raise transient
+                if not checked and last_error is not None:
+                    raise last_error
+                raise ArchiveError(f"no remote copy of {record_id} verified; refusing to drop")
+    return tuple(results)
 
 
 def forget(
@@ -367,123 +382,145 @@ def copy(
 
 
 def verify(
-    file: str | Path,
+    path: str | Path,
     remotes: Sequence[str] = (),
     *,
     db_path: str | Path | None = None,
     cas_dir: str | Path | None = None,
     config_path: str | Path | None = None,
-) -> VerifyResult:
+) -> tuple[VerifyResult, ...]:
     """Check content against local and remote copies. Reports, never prunes.
 
+    A tree path checks every CAS link under it, one result per record.
     Works with no local file: the hash comes from a dangling link, a CAS
     object name or the record id. "local" is a pseudo-location.
     """
-    record_id = _record_id(file)
+    record_ids = _record_ids(path)
     try:
-        cas = find_cas(abs_path(file), cas_dir)
+        cas = find_cas(abs_path(path), cas_dir)
     except InputError:
         cas = None
     url = _wayback_url(config_path)
-    checks: list[Check] = []
+    results: list[VerifyResult] = []
     # Read-only connection: sweeps run verify in parallel and must not
     # contend for the SQLite write lock on connect.
     with ArchiveDB(db_path, readonly=True) as db:
-        record = db.load_file(record_id)
-        hashes = hashes_of(record)
-        if not remotes or "local" in remotes:
-            if cas is None:
-                local_status: Status = "unknown"
-            else:
-                obj = cas_path(cas, hashes.sha256)
-                if not obj.exists():
-                    local_status = "missing"
+        for record_id in record_ids:
+            record = db.load_file(record_id)
+            hashes = hashes_of(record)
+            checks: list[Check] = []
+            if not remotes or "local" in remotes:
+                if cas is None:
+                    local_status: Status = "unknown"
                 else:
-                    local_status = "ok" if hash_file(obj).sha256 == hashes.sha256 else "mismatch"
-            checks.append(Check(location="local", status=local_status))
-        wanted = [item for item in remotes if item != "local"]
-        for location in record.locations:
-            if remotes and not any(selects(location, item, url) for item in wanted):
-                continue
-            with _backend(location, url) as backend:
-                checks.append(Check(location=location, status=backend.verify(location, hashes)))
-    return VerifyResult(record_id=record_id, checks=tuple(checks))
+                    obj = cas_path(cas, hashes.sha256)
+                    if not obj.exists():
+                        local_status = "missing"
+                    else:
+                        local_status = (
+                            "ok" if hash_file(obj).sha256 == hashes.sha256 else "mismatch"
+                        )
+                checks.append(Check(location="local", status=local_status))
+            wanted = [item for item in remotes if item != "local"]
+            for location in record.locations:
+                if remotes and not any(selects(location, item, url) for item in wanted):
+                    continue
+                with _backend(location, url) as backend:
+                    checks.append(Check(location=location, status=backend.verify(location, hashes)))
+            results.append(VerifyResult(record_id=record_id, checks=tuple(checks)))
+    return tuple(results)
 
 
 def get(
-    file: str | Path,
+    path: str | Path,
     remote: str | None = None,
     *,
     db_path: str | Path | None = None,
     cas_dir: str | Path | None = None,
     config_path: str | Path | None = None,
-) -> GetResult:
-    """Restore a local object from a remote copy, verifying the bytes.
+) -> tuple[GetResult, ...]:
+    """Restore local objects from remote copies, verifying the bytes.
 
+    A tree path restores every CAS link under it and re-points the links.
     The DB resolves addresses; the download itself is the proof. A mismatch
     never reaches the CAS.
     """
-    target = abs_path(file)
+    target = abs_path(path)
     cas = find_cas(target, cas_dir)
-    record_id = _record_id(file)
-    is_tree_path = (
-        not is_hash(str(file).removeprefix("sha256:"))
+    is_tree = target.is_dir() and not target.is_symlink()
+    if is_tree:
+        wanted = [
+            (item, f"sha256:{named}")
+            for item in walk_files(target)
+            if (named := link_hash(item)) is not None
+        ]
+    else:
+        wanted = [(target, *_record_ids(path))]
+    # ids and CAS paths have no tree link to repair; tree links and single
+    # tree paths are re-pointed at the restored object
+    linkable = is_tree or (
+        not is_hash(str(path).removeprefix("sha256:"))
         and cas not in target.parents
         and target != cas
     )
     url = _wayback_url(config_path)
+    results: list[GetResult] = []
     with ArchiveDB(db_path) as db:
-        record = db.load_file(record_id)
-        hashes = hashes_of(record)
-        obj = cas_path(cas, hashes.sha256)
-        if obj.exists():
-            if is_tree_path and (not target.exists() or target.is_symlink()):
-                make_link(target, obj)
-            return GetResult(record_id=record_id, location="local", path=str(obj))
-        candidates = [
-            location
-            for location in record.locations
-            if remote is None or selects(location, remote, url)
-        ]
-        if not candidates and remote is not None:
-            with _backend(remote, url) as backend:
-                candidates = [
-                    item.location
-                    for item in backend.list()
-                    if set(item.hashes) & set(hashes.identifiers)
-                ]
-        transient: TransientError | None = None
-        for location in candidates:
-            with tempfile.TemporaryDirectory() as tmp:
-                dest = Path(tmp) / hashes.sha256
-                try:
-                    with _backend(location, url) as backend:
-                        backend.fetch(location, dest)
-                except TransientError as exc:
-                    transient = exc
-                    continue
-                except ArchiveError:
-                    continue
-                if not dest.exists() or hash_file(dest).sha256 != hashes.sha256:
-                    continue
-                ingest(dest, cas, hashes)
-            db.register(record_id, [location])
-            db.commit()
-            if is_tree_path and (not target.exists() or target.is_symlink()):
-                make_link(target, obj)
-            return GetResult(record_id=record_id, location=location, path=str(obj))
-    if transient is not None:
-        raise transient
-    raise ArchiveError(f"no remote copy of {record_id} could be fetched and verified")
+        for item, record_id in wanted:
+            record = db.load_file(record_id)
+            hashes = hashes_of(record)
+            obj = cas_path(cas, hashes.sha256)
+            if obj.exists():
+                if linkable and (not item.exists() or item.is_symlink()):
+                    make_link(item, obj)
+                results.append(GetResult(record_id=record_id, location="local", path=str(obj)))
+                continue
+            candidates = [
+                location
+                for location in record.locations
+                if remote is None or selects(location, remote, url)
+            ]
+            if not candidates and remote is not None:
+                with _backend(remote, url) as backend:
+                    candidates = [
+                        entry.location
+                        for entry in backend.list()
+                        if set(entry.hashes) & set(hashes.identifiers)
+                    ]
+            transient: TransientError | None = None
+            for location in candidates:
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = Path(tmp) / hashes.sha256
+                    try:
+                        with _backend(location, url) as backend:
+                            backend.fetch(location, dest)
+                    except TransientError as exc:
+                        transient = exc
+                        continue
+                    except ArchiveError:
+                        continue
+                    if not dest.exists() or hash_file(dest).sha256 != hashes.sha256:
+                        continue
+                    ingest(dest, cas, hashes)
+                db.register(record_id, [location])
+                db.commit()
+                if linkable and (not item.exists() or item.is_symlink()):
+                    make_link(item, obj)
+                results.append(GetResult(record_id=record_id, location=location, path=str(obj)))
+                break
+            else:
+                if transient is not None:
+                    raise transient
+                raise ArchiveError(f"no remote copy of {record_id} could be fetched and verified")
+    return tuple(results)
 
 
 def remove_location(
-    file: str | Path,
+    path: str | Path,
     location: str,
     *,
     db_path: str | Path | None = None,
-) -> File:
+) -> tuple[File, ...]:
     """Drop one recorded remote copy after a verify report."""
-    record_id = _record_id(file)
     with ArchiveDB(db_path) as db:
-        return db.remove_location(record_id, location)
+        return tuple(db.remove_location(record_id, location) for record_id in _record_ids(path))

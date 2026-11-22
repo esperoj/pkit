@@ -122,7 +122,9 @@ org-mode knowledge base.
 re-adding the same bytes is the same row across machines; ~sha256~,
 ~sha1~ and ~md5~ live in dedicated indexed columns on ~files~ (fast
 ~by="sha1"~ / ~by=("sha1", "md5")~ lookups), and ~File.identifiers~ is
-for external IDs only. ~db_path~ defaults to ~[meta] db_path~ /
+for external IDs only. ~File.name~ is the tree name ~pkit archive add~
+first recorded for the bytes (first add wins); a plain scalar column, so
+~find(where={"name": ...})~ works. ~db_path~ defaults to ~[meta] db_path~ /
 ~$PKIT_META_DB_PATH~.
 
 ** Queries and probes

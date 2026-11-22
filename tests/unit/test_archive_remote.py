@@ -3,13 +3,14 @@
 Everything except the remote itself is real: sqlite records, the CAS, hashing.
 """
 
+import os
 import sqlite3
 from dataclasses import replace
 
 import pytest
 
 from pkit import archive
-from pkit.archive.cas import cas_path
+from pkit.archive.cas import cas_path, hash_file
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import RemoteFile
@@ -121,7 +122,7 @@ class TestVerify:
         install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
         _record_locations(db_path, added.record_id, [LOCATION])
 
-        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result.ok
         assert [(check.location, check.status) for check in result.checks] == [
@@ -129,12 +130,23 @@ class TestVerify:
             (LOCATION, "ok"),
         ]
 
+    def test_a_tree_reports_one_result_per_link(self, repo, db_path, added):
+        (repo / "manga" / "v2.cbz").write_bytes(b"pandora2")
+        archive.add(repo / "manga", db_path=db_path)
+
+        results = archive.verify(repo / "manga", db_path=db_path)
+
+        assert [result.record_id for result in results] == sorted(
+            [added.record_id, hash_file(repo / "manga" / "v2.cbz").record_id]
+        )
+        assert all(result.ok for result in results)
+
     def test_local_mismatch_when_object_is_tampered(self, repo, db_path, added):
         obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
         obj.chmod(0o644)
         obj.write_bytes(b"tampered")
 
-        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert not result.ok
         assert result.checks[0] == archive.Check(location="local", status="mismatch")
@@ -142,7 +154,7 @@ class TestVerify:
     def test_local_missing_after_drop(self, repo, db_path, added):
         cas_path(repo / ".git" / "pkit-archive", added.sha256).unlink()
 
-        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result.checks == (archive.Check(location="local", status="missing"),)
 
@@ -150,8 +162,8 @@ class TestVerify:
         install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
         _record_locations(db_path, added.record_id, [LOCATION])
 
-        remote_only = archive.verify(repo / "manga" / "v1.cbz", ["ia:x"], db_path=db_path)
-        local_only = archive.verify(repo / "manga" / "v1.cbz", ["local"], db_path=db_path)
+        (remote_only,) = archive.verify(repo / "manga" / "v1.cbz", ["ia:x"], db_path=db_path)
+        (local_only,) = archive.verify(repo / "manga" / "v1.cbz", ["local"], db_path=db_path)
 
         assert [check.location for check in remote_only.checks] == [LOCATION]
         assert [check.location for check in local_only.checks] == ["local"]
@@ -160,13 +172,13 @@ class TestVerify:
         install_backend(files=[RemoteFile(LOCATION, ("sha1:" + "0" * 40,))])
         _record_locations(db_path, added.record_id, [LOCATION])
 
-        result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result.checks[-1].status == "mismatch"
         assert not result.ok
 
     def test_works_from_bare_hash_id(self, repo, db_path, added):
-        result = archive.verify(
+        (result,) = archive.verify(
             added.record_id,
             ["local"],
             db_path=db_path,
@@ -186,12 +198,24 @@ class TestDrop:
         backend = install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
         archive.match("ia:x", db_path=db_path)
 
-        result = archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result == archive.DropResult(record_id=added.record_id, location=LOCATION)
         assert not cas_path(repo / ".git" / "pkit-archive", added.sha256).exists()
         assert (repo / "manga" / "v1.cbz").is_symlink()  # the name survives, dangling
         assert backend.verify_calls == [LOCATION]
+
+    def test_a_tree_drops_every_link(self, repo, db_path, install_backend):
+        (repo / "manga" / "v2.cbz").write_bytes(b"pandora2")
+        archive.add(repo / "manga", db_path=db_path)
+        install_backend(remote="ia:x")
+        archive.copy(repo / "manga", "ia:x", db_path=db_path)
+
+        results = archive.drop(repo / "manga", db_path=db_path)
+
+        assert [result.location for result in results] == ["ia:x/v1.cbz", "ia:x/v2.cbz"]
+        cas = repo / ".git" / "pkit-archive"
+        assert not any(obj.is_file() for obj in cas.rglob("*"))
 
     def test_tries_locations_until_one_verifies(self, repo, db_path, added, install_backend):
         install_backend(
@@ -202,7 +226,7 @@ class TestDrop:
         )
         _record_locations(db_path, added.record_id, ["ia:a/v1.cbz", "ia:b/v1.cbz"])
 
-        result = archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.drop(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result.location == "ia:b/v1.cbz"
 
@@ -239,7 +263,7 @@ class TestGet:
         obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
         obj.unlink()
 
-        result = archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result == archive.GetResult(
             record_id=added.record_id, location=LOCATION, path=str(obj)
@@ -248,10 +272,24 @@ class TestGet:
         assert obj.stat().st_mode & 0o777 == 0o444
         assert (repo / "manga" / "v1.cbz").read_bytes() == PAYLOAD
 
+    def test_a_tree_restores_every_link(self, repo, db_path, install_backend):
+        (repo / "manga" / "v2.cbz").write_bytes(b"pandora2")
+        archive.add(repo / "manga", db_path=db_path)
+        install_backend(remote="ia:x")
+        archive.copy(repo / "manga", "ia:x", db_path=db_path)
+        for item in (repo / "manga").iterdir():
+            cas_path(repo / ".git" / "pkit-archive", os.path.basename(os.readlink(item))).unlink()
+
+        results = archive.get(repo / "manga", db_path=db_path)
+
+        assert [result.location for result in results] == ["ia:x/v1.cbz", "ia:x/v2.cbz"]
+        assert (repo / "manga" / "v1.cbz").read_bytes() == PAYLOAD
+        assert (repo / "manga" / "v2.cbz").read_bytes() == b"pandora2"
+
     def test_local_copy_short_circuits(self, repo, db_path, added, install_backend):
         backend = install_backend(remote="ia:x")
 
-        result = archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
+        (result,) = archive.get(repo / "manga" / "v1.cbz", db_path=db_path)
 
         assert result.location == "local"
         assert backend.uploads == []
@@ -274,7 +312,7 @@ class TestGet:
         obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
         obj.unlink()
 
-        result = archive.get(repo / "manga" / "v1.cbz", "ia:x", db_path=db_path)
+        (result,) = archive.get(repo / "manga" / "v1.cbz", "ia:x", db_path=db_path)
 
         assert result.location == LOCATION
 
@@ -291,9 +329,18 @@ class TestRemoveLocation:
         install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
         archive.match("ia:x", db_path=db_path)
 
-        record = archive.remove_location(repo / "manga" / "v1.cbz", LOCATION, db_path=db_path)
+        (record,) = archive.remove_location(repo / "manga" / "v1.cbz", LOCATION, db_path=db_path)
 
         assert record.locations == []
+        assert _stored(db_path, added.record_id).locations == []
+
+    def test_a_tree_removes_one_location_per_link(self, repo, db_path, added, install_backend):
+        install_backend(files=[RemoteFile(LOCATION, (f"sha1:{added.sha1}",))])
+        archive.match("ia:x", db_path=db_path)
+
+        records = archive.remove_location(repo / "manga", LOCATION, db_path=db_path)
+
+        assert [record.id for record in records] == [added.record_id]
         assert _stored(db_path, added.record_id).locations == []
 
 
@@ -308,7 +355,7 @@ class TestVerifyConcurrency:
         writer.execute("INSERT INTO persons(id, slug, name) VALUES ('p9', 'p9', 'Busy')")
 
         try:
-            result = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
+            (result,) = archive.verify(repo / "manga" / "v1.cbz", db_path=db_path)
         finally:
             writer.rollback()
             writer.close()

@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from pkit.lib import shell
+
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 BASH = shutil.which("bash") or "/bin/bash"
 ALL_SCRIPTS = ("meta-diff-fzf", "archive-pack", "archive-verify-sweep")
@@ -43,6 +45,9 @@ printf 'stub-ciphertext\\n' > "$out"
 
 
 def run_script(script, *args, path=None, cwd=None, env=None):
+    """Spawn one script under test: raw subprocess, because env, cwd and the
+    return code (not an exception) are the point here. Every other tool
+    call in this file goes through pkit.lib.shell."""
     run_env = dict(os.environ)
     if path is not None:
         run_env["PATH"] = path
@@ -78,12 +83,11 @@ def stub_tool(tmp_path: Path, name: str, body: str) -> None:
 
 
 def tar_supports(flag: str) -> bool:
-    return (
-        subprocess.run(
-            ["tar", flag, "-cf", os.devnull, "-T", os.devnull], capture_output=True
-        ).returncode
-        == 0
-    )
+    try:
+        shell.run(["tar", flag, "-cf", os.devnull, "-T", os.devnull])
+    except shell.ShellError:
+        return False
+    return True
 
 
 def tree(tmp_path: Path) -> Path:
@@ -158,23 +162,22 @@ def unpack(data: bytes, dest: Path, identity: Path | None = None, extra=()) -> l
 def git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "records"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    shell.run(["git", "init", "-q", str(repo)])
     for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+        shell.run(["git", "-C", str(repo), "config", key, value])
     return repo
 
 
 def commit(repo: Path, table: str, rows: list[dict]) -> None:
     repo.joinpath(f"{table}.json").write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+    shell.run(["git", "-C", str(repo), "add", "."])
+    shell.run(["git", "-C", str(repo), "commit", "-qm", "init"])
 
 
 @pytest.mark.parametrize("script", ALL_SCRIPTS)
 def test_script_is_executable_and_syntax_valid(script):
     assert SCRIPTS.joinpath(script).stat().st_mode & 0o111
-    result = subprocess.run([BASH, "-n", str(SCRIPTS / script)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    shell.run([BASH, "-n", str(SCRIPTS / script)])  # a syntax error raises
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
@@ -527,7 +530,7 @@ class TestArchivePackOutput:
         data = out.read_bytes()
         assert data[:4] == b"\x28\xb5\x2f\xfd"  # zstd magic
         assert data[4] & 0x04  # content-checksum flag
-        assert subprocess.run(["zstd", "--test", str(out)], capture_output=True).returncode == 0
+        shell.run(["zstd", "--test", str(out)])
 
     def test_level_flag_is_honoured(self, tmp_path):
         source = big_tree(tmp_path)
@@ -588,7 +591,7 @@ class TestArchivePackEncryption:
     @needs_age
     def test_encrypted_chunks_round_trip(self, tmp_path):
         identity = tmp_path / "key.txt"
-        generated = subprocess.run(["age-keygen"], capture_output=True, text=True, check=True)
+        generated = shell.run(["age-keygen"])
         identity.write_text(generated.stdout, encoding="utf-8")
         recipient = next(
             line.split(":", 1)[1].strip()

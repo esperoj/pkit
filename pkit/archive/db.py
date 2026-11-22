@@ -34,14 +34,19 @@ class ArchiveDB(MetaDB):
             raise InputError(f"{record_id} is not a file record")
         return record
 
-    def file_record(self, hashes: Hashes, size: int) -> File:
-        """Create or merge the content row for these hashes."""
+    def file_record(self, hashes: Hashes, size: int, name: str = "") -> File:
+        """Create or merge the content row for these hashes.
+
+        name is the tree name the content first arrived under; an already
+        recorded name wins, so re-adds and re-registration stay no-ops.
+        """
         probe = File(id=hashes.record_id, sha256=hashes.sha256, sha1=hashes.sha1, md5=hashes.md5)
         # A File probe only reads the files table, so the hit is always a File.
         stored = cast(File, self.get(probe))
         if stored is None:
             created = File(
                 id=hashes.record_id,
+                name=name,
                 size=size,
                 sha256=hashes.sha256,
                 sha1=hashes.sha1,
@@ -58,6 +63,7 @@ class ArchiveDB(MetaDB):
             sha1=hashes.sha1 or stored.sha1,
             md5=hashes.md5 or stored.md5,
             size=stored.size or size,
+            name=stored.name or name,
         )
         if merged == stored:
             return stored

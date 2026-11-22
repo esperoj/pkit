@@ -165,7 +165,35 @@ def test_verify_json(run_cli, repo, db_path, added):
 
     assert code == EXIT_OK, err
     payload = json.loads(out)
-    assert payload["checks"] == [{"location": "local", "status": "ok"}]
+    assert payload == [
+        {"record_id": added.record_id, "checks": [{"location": "local", "status": "ok"}]}
+    ]
+
+
+def test_verify_tree_tags_lines_with_record_ids(run_cli, repo, db_path, added):
+    (repo / "manga" / "v2.cbz").write_bytes(b"pandora2")
+    run_cli(main, ["add", str(repo / "manga")])
+
+    code, out, err = run_cli(main, ["verify", str(repo / "manga")])
+
+    assert code == EXIT_OK, err
+    lines = out.strip().splitlines()
+    assert len(lines) == 2
+    assert all(line.endswith("\tlocal\tok") for line in lines)
+    other = hash_file(repo / "manga" / "v2.cbz").record_id
+    assert {line.split("\t")[0] for line in lines} == {added.record_id, other}
+
+
+def test_verify_tree_without_links_is_the_sweep_alert(run_cli, tmp_path, db_path):
+    (tmp_path / ".git").mkdir()
+    empty = tmp_path / "plain"
+    empty.mkdir()
+    (empty / "note.txt").write_text("not a cas link")
+
+    code, out, err = run_cli(main, ["verify", str(empty)])
+
+    assert code == EXIT_ERROR, err
+    assert out == ""
 
 
 def test_verify_remote_ok(run_cli, repo, db_path, added, rclone):
@@ -222,6 +250,20 @@ def test_drop_success_via_cli(run_cli, repo, db_path, added, install_backend):
     assert not cas_path(repo / ".git" / "pkit-archive", added.sha256).exists()
 
 
+def test_drop_tree_drops_every_link(run_cli, repo, db_path, install_backend):
+    (repo / "manga" / "v2.cbz").write_bytes(b"pandora2")
+    run_cli(main, ["add", str(repo / "manga")])
+    install_backend(remote="ia:x")
+    run_cli(main, ["copy", str(repo / "manga"), "ia:x"])
+
+    code, out, err = run_cli(main, ["drop", str(repo / "manga")])
+
+    assert code == EXIT_OK, err
+    assert len(out.strip().splitlines()) == 2
+    assert all("dropped sha256:" in line for line in out.strip().splitlines())
+    assert not any(obj.is_file() for obj in (repo / ".git" / "pkit-archive").rglob("*"))
+
+
 def test_get_restores_from_remote(run_cli, repo, db_path, added, rclone, monkeypatch):
     obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
     obj.unlink()
@@ -238,6 +280,25 @@ def test_get_restores_from_remote(run_cli, repo, db_path, added, rclone, monkeyp
     assert code == EXIT_OK, err
     assert out.strip() == str(obj)
     assert obj.read_bytes() == PAYLOAD
+
+
+def test_get_tree_restores_every_link(run_cli, repo, db_path, added, install_backend):
+    (repo / "manga" / "v2.cbz").write_bytes(b"pandora2")
+    run_cli(main, ["add", str(repo / "manga")])
+    install_backend(remote="ia:x")
+    run_cli(main, ["copy", str(repo / "manga"), "ia:x"])
+    cas = repo / ".git" / "pkit-archive"
+    for item in (repo / "manga").iterdir():
+        cas_path(cas, os.path.basename(os.readlink(item))).unlink()
+
+    code, out, err = run_cli(main, ["get", str(repo / "manga")])
+
+    assert code == EXIT_OK, err
+    lines = out.strip().splitlines()
+    assert len(lines) == 2
+    assert all(line.startswith(str(cas)) for line in lines)
+    assert (repo / "manga" / "v1.cbz").read_bytes() == PAYLOAD
+    assert (repo / "manga" / "v2.cbz").read_bytes() == b"pandora2"
 
 
 def test_forget_reports_counts(run_cli, repo, db_path, added):

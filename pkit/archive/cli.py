@@ -4,14 +4,15 @@
     pkit archive fix PATH                 # re-point links, re-assert perms
     pkit archive copy PATH REMOTE         # transfer missing, register
     pkit archive match REMOTE             # register known content, no transfer
-    pkit archive verify FILE [REMOTE...] # report local + remote integrity
+    pkit archive verify PATH [REMOTE...]  # report local + remote integrity
     pkit archive drop PATH               # delete local copy once a remote is proven
-    pkit archive get FILE [REMOTE]       # restore a verified copy
+    pkit archive get PATH [REMOTE]        # restore a verified copy
     pkit archive forget PATH              # delete records for dangling links
-    pkit archive remove-location FILE LOCATION
+    pkit archive remove-location PATH LOCATION
 
-Paths and remotes come from the tree; the database and CAS root come from
-config ([meta] db_path, [archive] wayback_url) and their env overrides.
+Every PATH is a tree (worked per CAS link under it) or a single target: a
+file, a CAS path, or a 'sha256:<hex>' id. The database and CAS root come
+from config ([meta] db_path, [archive] wayback_url) and their env overrides.
 """
 
 import argparse
@@ -110,7 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser(
         "verify", parents=[_json_parent()], help="Check content against local and remote copies."
     )
-    verify.add_argument("file", help="Tree path, CAS path or 'sha256:<hex>' id.")
+    verify.add_argument("path", help="Tree, file, CAS path or 'sha256:<hex>' id.")
     verify.add_argument(
         "remotes",
         nargs="*",
@@ -123,13 +124,13 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[_json_parent()],
         help="Delete the local object after proving one remote copy.",
     )
-    drop.add_argument("path", help="Tree path, CAS path or 'sha256:<hex>' id.")
+    drop.add_argument("path", help="Tree, file, CAS path or 'sha256:<hex>' id.")
     drop.set_defaults(func=_drop)
 
     get = sub.add_parser(
         "get", parents=[_json_parent()], help="Restore a local object from a remote copy, verified."
     )
-    get.add_argument("file", help="Tree path, CAS path or 'sha256:<hex>' id.")
+    get.add_argument("path", help="Tree, file, CAS path or 'sha256:<hex>' id.")
     get.add_argument("remote", nargs="?", default=None, help="Preferred remote (default: any).")
     get.set_defaults(func=_get)
 
@@ -142,7 +143,7 @@ def _build_parser() -> argparse.ArgumentParser:
     remove = sub.add_parser(
         "remove-location", parents=[_json_parent()], help="Forget one recorded remote copy."
     )
-    remove.add_argument("file", help="Tree path, CAS path or 'sha256:<hex>' id.")
+    remove.add_argument("path", help="Tree, file, CAS path or 'sha256:<hex>' id.")
     remove.add_argument("location", help="Recorded location to drop.")
     remove.set_defaults(func=_remove_location)
     return parser
@@ -197,20 +198,30 @@ def _match(args: argparse.Namespace) -> int:
     )
 
 
+def _plain_verify(results: tuple[archive.VerifyResult, ...]) -> str | None:
+    # one record keeps the sweep's bare "location<TAB>status" line; a tree
+    # prefixes the record id so every line stays attributable
+    tagged = len(results) > 1
+    return (
+        "\n".join(
+            (f"{result.record_id}\t" if tagged else "") + f"{check.location}\t{check.status}"
+            for result in results
+            for check in result.checks
+        )
+        or None
+    )
+
+
 def _verify(args: argparse.Namespace) -> int:
     try:
-        result = archive.verify(args.file, args.remotes)
+        results = archive.verify(args.path, args.remotes)
     except (ArchiveError, OSError, ValueError) as exc:
         return fail(str(exc), exit_code=_exit_code(exc))
-    emit_result(
-        result,
-        json_output=args.json_output,
-        # empty checks (a remote filter that matches nothing) print nothing
-        plain=lambda r: "\n".join(f"{c.location}\t{c.status}" for c in r.checks) or None,
-    )
-    # A report is success only when every check passed; a mismatch or a
-    # missing copy is the alert a sweep looks for.
-    return EXIT_OK if result.ok else EXIT_ERROR
+    emit_result(results, json_output=args.json_output, plain=_plain_verify)
+    # A report is success only when every check passed; an empty report (a
+    # filter that matches nothing, a tree without CAS links) is the alert a
+    # sweep looks for.
+    return EXIT_OK if results and all(result.ok for result in results) else EXIT_ERROR
 
 
 def _drop(args: argparse.Namespace) -> int:
@@ -218,7 +229,12 @@ def _drop(args: argparse.Namespace) -> int:
         archive.drop,
         args=args,
         path=args.path,
-        plain=lambda r: f"dropped {r.record_id} (verified at {r.location})",
+        plain=lambda results: (
+            "\n".join(
+                f"dropped {result.record_id} (verified at {result.location})" for result in results
+            )
+            or None
+        ),
     )
 
 
@@ -226,9 +242,9 @@ def _get(args: argparse.Namespace) -> int:
     return _run(
         archive.get,
         args=args,
-        file=args.file,
+        path=args.path,
         remote=args.remote,
-        plain=lambda r: r.path,
+        plain=lambda results: "\n".join(result.path for result in results) or None,
     )
 
 
@@ -245,9 +261,14 @@ def _remove_location(args: argparse.Namespace) -> int:
     return _run(
         archive.remove_location,
         args=args,
-        file=args.file,
+        path=args.path,
         location=args.location,
-        plain=lambda r: f"{len(r.locations)} locations remain for {r.id}",
+        plain=lambda results: (
+            "\n".join(
+                f"{len(record.locations)} locations remain for {record.id}" for record in results
+            )
+            or None
+        ),
     )
 
 

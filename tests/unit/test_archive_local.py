@@ -28,12 +28,27 @@ def test_add_moves_content_and_links(repo, db_path):
     with MetaDB(db_path) as meta:
         record = meta.get(hashes.record_id)
     assert isinstance(record, File)
+    assert record.name == "v1.cbz"  # the tree name survives the CAS
     assert record.size == 7
     assert record.sha256 == hashes.sha256
     assert record.sha1 == hashes.sha1
     assert record.md5 == hashes.md5
     assert record.identifiers == []
     assert record.locations == []
+
+
+def test_add_records_the_first_name_only(repo, db_path):
+    tree = repo / "manga"
+    archive.add(tree, db_path=db_path)
+    hashes = hash_file(tree / "v1.cbz")
+    (tree / "renamed.cbz").write_bytes(PAYLOAD)  # same bytes, new name
+
+    archive.add(tree, db_path=db_path)
+
+    with MetaDB(db_path) as meta:
+        record = meta.get(hashes.record_id)
+    assert isinstance(record, File)
+    assert record.name == "v1.cbz"  # first add wins: records stay stable
 
 
 def test_hashes_of_reads_columns_and_falls_back_to_id():
@@ -74,6 +89,18 @@ def test_file_record_upgrades_legacy_hash_tokens(db_path):
     assert upgraded.md5 == "c" * 32
     assert upgraded.size == 7
     assert again == upgraded  # the second call is a no-op
+
+
+def test_file_record_fills_a_missing_name(db_path):
+    """A legacy row without a name gains one on the next add; then it sticks."""
+    sha256 = "a" * 64
+    with ArchiveDB(db_path) as db:
+        db.put(File(id=f"sha256:{sha256}", sha256=sha256))
+        filled = db.file_record(Hashes(sha256=sha256), 7, "book.cbz")
+        again = db.file_record(Hashes(sha256=sha256), 7, "other.cbz")
+
+    assert filled.name == "book.cbz"
+    assert again.name == "book.cbz"
 
 
 def test_load_file_rejects_non_file_record(db_path):
