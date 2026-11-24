@@ -26,7 +26,7 @@ from pkit.lib.cli import (
     EXIT_OK,
     EXIT_TEMPFAIL,
     EXIT_USAGE,
-    emit_result,
+    emit,
     fail,
     run_tool,
 )
@@ -49,7 +49,7 @@ def _exit_code(exc: Exception) -> int:
 def _run(
     func: Callable[..., Any],
     *,
-    args: argparse.Namespace,
+    json_output: bool,
     plain: Callable[[Any], str | None],
     **kwargs: Any,
 ) -> int:
@@ -58,7 +58,7 @@ def _run(
         result = func(**kwargs)
     except (ArchiveError, OSError, ValueError) as exc:
         return fail(str(exc), exit_code=_exit_code(exc))
-    emit_result(result, json_output=args.json_output, plain=plain)
+    emit(result, plain(result), json_output=json_output)
     return EXIT_OK
 
 
@@ -160,15 +160,15 @@ def _add(args: argparse.Namespace) -> int:
     except (ArchiveError, OSError, ValueError) as exc:
         return fail(str(exc), exit_code=_exit_code(exc))
     summary = archive.AddResult(added, relinked, skipped)
-    emit_result(
+    emit(
         summary,
+        f"{summary.added} added, {summary.relinked} relinked, {summary.skipped} skipped",
         json_output=args.json_output,
-        plain=lambda r: f"{r.added} added, {r.relinked} relinked, {r.skipped} skipped",
     )
     return EXIT_OK
 
 
-def _plain_fix(result: archive.FixResult) -> str:
+def _plain_fix(result: archive.FixResult) -> str | None:
     text = f"{result.relinked} relinked, {result.permissions} permissions fixed"
     if result.missing:
         text += "\n" + "\n".join(f"missing {path}" for path in result.missing)
@@ -176,25 +176,31 @@ def _plain_fix(result: archive.FixResult) -> str:
 
 
 def _fix(args: argparse.Namespace) -> int:
-    return _run(archive.fix, args=args, path=args.path, plain=_plain_fix)
+    return _run(archive.fix, json_output=args.json_output, plain=_plain_fix, path=args.path)
 
 
-def _plain_copy(result: archive.CopyResult) -> str:
+def _plain_copy(result: archive.CopyResult) -> str | None:
     lines = [f"{result.copied} copied, {result.present} already present"]
     lines.extend(result.locations)
     return "\n".join(lines)
 
 
 def _copy(args: argparse.Namespace) -> int:
-    return _run(archive.copy, args=args, path=args.path, remote=args.remote, plain=_plain_copy)
+    return _run(
+        archive.copy,
+        json_output=args.json_output,
+        plain=_plain_copy,
+        path=args.path,
+        remote=args.remote,
+    )
 
 
 def _match(args: argparse.Namespace) -> int:
     return _run(
         archive.match,
-        args=args,
-        remote=args.remote,
+        json_output=args.json_output,
         plain=lambda r: f"{r.matched} matched, {r.unknown} unknown, {r.no_hash} without hashes",
+        remote=args.remote,
     )
 
 
@@ -217,7 +223,7 @@ def _verify(args: argparse.Namespace) -> int:
         results = archive.verify(args.path, args.remotes)
     except (ArchiveError, OSError, ValueError) as exc:
         return fail(str(exc), exit_code=_exit_code(exc))
-    emit_result(results, json_output=args.json_output, plain=_plain_verify)
+    emit(results, _plain_verify(results), json_output=args.json_output)
     # A report is success only when every check passed; an empty report (a
     # filter that matches nothing, a tree without CAS links) is the alert a
     # sweep looks for.
@@ -227,7 +233,7 @@ def _verify(args: argparse.Namespace) -> int:
 def _drop(args: argparse.Namespace) -> int:
     return _run(
         archive.drop,
-        args=args,
+        json_output=args.json_output,
         path=args.path,
         plain=lambda results: (
             "\n".join(
@@ -241,7 +247,7 @@ def _drop(args: argparse.Namespace) -> int:
 def _get(args: argparse.Namespace) -> int:
     return _run(
         archive.get,
-        args=args,
+        json_output=args.json_output,
         path=args.path,
         remote=args.remote,
         plain=lambda results: "\n".join(result.path for result in results) or None,
@@ -251,7 +257,7 @@ def _get(args: argparse.Namespace) -> int:
 def _forget(args: argparse.Namespace) -> int:
     return _run(
         archive.forget,
-        args=args,
+        json_output=args.json_output,
         path=args.path,
         plain=lambda r: f"{len(r.forgotten)} forgotten, {len(r.kept)} kept",
     )
@@ -260,7 +266,7 @@ def _forget(args: argparse.Namespace) -> int:
 def _remove_location(args: argparse.Namespace) -> int:
     return _run(
         archive.remove_location,
-        args=args,
+        json_output=args.json_output,
         path=args.path,
         location=args.location,
         plain=lambda results: (

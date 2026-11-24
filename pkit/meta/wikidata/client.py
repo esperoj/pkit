@@ -10,14 +10,14 @@ from pkit.lib.http import HttpClient
 from pkit.meta.models import Person, Record
 from pkit.meta.source import Plan, select_plan
 from pkit.meta.wikidata.extract import (
-    _LANG_QIDS,
+    LANG_QIDS,
     PRIMARY_LANGS,
     EntityView,
-    _entity_lang_code,
-    _extract_item_ids,
-    _monolingual_map,
-    _normalize_lang,
-    _text_map,
+    entity_lang_code,
+    extract_item_ids,
+    monolingual_map,
+    normalize_lang,
+    text_map,
 )
 from pkit.meta.wikidata.plans import PLANS
 from pkit.version import get_version
@@ -122,7 +122,7 @@ class WikidataSource(Closeable):
         canon_id = str(entity.get("id") or qid)
         self._entities[qid] = entity
         self._entities[canon_id] = entity
-        lbls = _text_map(entity.get("labels"))
+        lbls = text_map(entity.get("labels"))
         if lbls:
             self._labels.setdefault(canon_id, lbls)
         return entity
@@ -134,38 +134,38 @@ class WikidataSource(Closeable):
         entities = self._wbgetentities(needed, props="labels")
         for qid in needed:
             entity = entities.get(qid) or {}
-            self._labels[qid] = _text_map(entity.get("labels"))
+            self._labels[qid] = text_map(entity.get("labels"))
 
     def _resolve_lang_codes(self, qids: Sequence[str]) -> list[str]:
-        unknown = [qid for qid in qids if qid not in _LANG_QIDS and qid not in self._lang_codes]
+        unknown = [qid for qid in qids if qid not in LANG_QIDS and qid not in self._lang_codes]
         if unknown:
             entities = self._wbgetentities(unknown, props="labels|claims")
             for qid in unknown:
                 entity = entities.get(qid)
                 if isinstance(entity, dict) and "missing" not in entity:
-                    lbls = _text_map(entity.get("labels"))
+                    lbls = text_map(entity.get("labels"))
                     if lbls:
                         self._labels[qid] = lbls
-                    self._lang_codes[qid] = _entity_lang_code(entity)
+                    self._lang_codes[qid] = entity_lang_code(entity)
                 else:
                     self._lang_codes[qid] = ""
         codes: list[str] = []
         for qid in qids:
-            code = _LANG_QIDS.get(qid) or self._lang_codes.get(qid, "")
+            code = LANG_QIDS.get(qid) or self._lang_codes.get(qid, "")
             if code and code not in codes:
                 codes.append(code)
         return codes
 
     def _detect_orig_lang(self, entity: dict[str, Any], *, is_person: bool) -> str:
         prop = "P103" if is_person else "P407"
-        qids = _extract_item_ids(entity, prop)
+        qids = extract_item_ids(entity, prop)
         if qids:
             codes = self._resolve_lang_codes(qids)
             return codes[0] if len(codes) == 1 else ""
         text_prop = "P1559" if is_person else "P1476"
-        monolingual = _monolingual_map(entity, text_prop)
+        monolingual = monolingual_map(entity, text_prop)
         codes = list(
-            dict.fromkeys(_normalize_lang(tag) for tag in monolingual if _normalize_lang(tag))
+            dict.fromkeys(normalize_lang(tag) for tag in monolingual if normalize_lang(tag))
         )
         return codes[0] if len(codes) == 1 else ""
 

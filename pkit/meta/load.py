@@ -7,6 +7,7 @@ cycle protection and identifier-based deduplication.
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +40,9 @@ def _resolve_lang(lang: str | None, default: str) -> str:
 
 def _match_source(value: str) -> tuple[Callable[[], Source], str] | None:
     for factory in SOURCES:
-        with factory() as src:
-            key = src.match(value)
-            if key is not None:
-                return factory, key
+        key = factory().match(value)
+        if key is not None:
+            return factory, key
     return None
 
 
@@ -142,7 +142,7 @@ def _load_source(
     visiting: set[str] = set()
     imported = 0
 
-    with factory() as src, MetaDB(db_path) as db:
+    with closing(factory()) as src, MetaDB(db_path) as db:
 
         def _import_key(key: str, *, expected: type[Record] | None = None) -> str | None:
             nonlocal imported
@@ -151,7 +151,7 @@ def _load_source(
             if key in visiting:
                 return provisional.get(key)
             if not refresh:
-                existing = db.get(f"{src.name}:{key}", record_type=expected, by="identifiers")
+                existing = db.find_one(expected, where={"identifiers": f"{src.name}:{key}"})
                 if existing is not None:
                     resolved[key] = existing.id
                     return existing.id
@@ -180,9 +180,7 @@ def _load_source(
                 visiting.discard(key)
                 return provisional.get(canon_key)
             if not refresh and canon_key != key:
-                existing = db.get(
-                    f"{src.name}:{canon_key}", record_type=plan.model, by="identifiers"
-                )
+                existing = db.find_one(plan.model, where={"identifiers": f"{src.name}:{canon_key}"})
                 if existing is not None:
                     visiting.discard(key)
                     resolved[key] = existing.id
@@ -193,12 +191,9 @@ def _load_source(
             values = {name: extractor(item) for name, extractor in plan.fields.items()}
             canonical_id = f"{src.name}:{canon_key}"
             tokens = [canonical_id, *(values.get("identifiers") or ())]
-            # A mapping probe: unique fields carry the values, everything
-            # else rides along; no id is minted, so deduplication keys on
-            # plan.model.unique (identifiers, or hashes for File).
-            probe = {"type": type_name(plan.model), **values, "identifiers": tokens}
-            probe.setdefault("id", "")
-            existing = db.get(probe)
+            # Deduplication keys on the model's identifiers: the canonical
+            # id plus every external identifier the plan extracted.
+            existing = db.find_one(plan.model, where={"identifiers": tokens})
             record_id = existing.id if existing is not None else new_id()
             provisional[key] = record_id
             provisional[canon_key] = record_id

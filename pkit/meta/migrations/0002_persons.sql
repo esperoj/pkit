@@ -1,4 +1,4 @@
--- person.sql
+-- persons: authors, creators.
 
 CREATE TABLE IF NOT EXISTS persons (
     id TEXT PRIMARY KEY NOT NULL CHECK (id <> ''),

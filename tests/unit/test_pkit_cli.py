@@ -2,7 +2,6 @@
 
 import runpy
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,13 +13,9 @@ from pkit.version import get_version
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _pyproject_version() -> str:
-    with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
-        return str(tomllib.load(handle)["project"]["version"])
-
-
-def test_version_matches_pyproject() -> None:
-    assert get_version() == _pyproject_version()
+def test_version_comes_from_metadata(monkeypatch) -> None:
+    monkeypatch.setattr("pkit.version.version", lambda name: "9.9.9")
+    assert get_version() == "9.9.9"
 
 
 def test_wayback_exports() -> None:

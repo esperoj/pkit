@@ -189,13 +189,13 @@ def test_migrate_prints_applied_names(run_cli, db_path):
 
     assert code == EXIT_OK, err
     assert out.splitlines() == [
-        "0001_file.sql",
-        "0002_person.sql",
-        "0003_text.sql",
-        "0004_software.sql",
-        "0005_video.sql",
-        "0006_sound.sql",
-        "0007_file_name.sql",
+        "0001_files.sql",
+        "0002_persons.sql",
+        "0003_texts.sql",
+        "0004_text_authors.sql",
+        "0005_software.sql",
+        "0006_videos.sql",
+        "0007_sounds.sql",
     ]
 
 

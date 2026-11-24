@@ -91,10 +91,6 @@ def migrate(conn: sqlite3.Connection, migrations_dir: str | Path | None) -> list
     )
     newly: list[str] = []
     for file_path in pending:
-        # Bookkeeping first, schema second, one transaction: the primary key
-        # re-checks the applied set inside the transaction, so the loser of a
-        # concurrent migrate aborts before any schema statement runs —
-        # migration bodies never run twice, so they need not be re-runnable.
         name = file_path.name.replace("'", "''")
         try:
             conn.executescript(
@@ -121,8 +117,7 @@ class Database:
 
     readonly=True opens an existing non-empty database read-only (mode=ro,
     no DDL, no migrations); a missing or empty file is still created once,
-    so callers behave sensibly on a fresh machine. auto_migrate=False skips
-    the automatic check for callers that run migrate() themselves.
+    so callers behave sensibly on a fresh machine.
     """
 
     def __init__(
@@ -131,7 +126,6 @@ class Database:
         *,
         migrations_dir: str | Path | None = None,
         readonly: bool = False,
-        auto_migrate: bool = True,
     ) -> None:
         target = Path(path).expanduser()
         self.migrations_dir = (
@@ -139,18 +133,8 @@ class Database:
         )
         self.readonly = readonly and target.is_file() and target.stat().st_size > 0
         self.conn = connect(target, readonly=self.readonly)
-        if (
-            not self.readonly
-            and auto_migrate
-            and pending_migrations(self.conn, self.migrations_dir)
-        ):
+        if not self.readonly and pending_migrations(self.conn, self.migrations_dir):
             migrate(self.conn, self.migrations_dir)
-
-    def migrate(self, migrations_dir: str | Path | None = None) -> list[str]:
-        """Apply pending migrations; see the module-level migrate()."""
-        return migrate(
-            self.conn, migrations_dir if migrations_dir is not None else self.migrations_dir
-        )
 
     def commit(self) -> None:
         """Persist writes so far; the context exit commits the remainder."""

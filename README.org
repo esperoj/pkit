@@ -1,65 +1,58 @@
 #+title: pkit — Engineering Guide
 
-BusyBox-style personal CLI toolkit.
+BusyBox-style personal CLI toolkit: one ~pkit~ command, three tools
+(~archive~, ~meta~, ~wayback~), zero runtime dependencies.
+
 Values: durability, simplicity, borrowed standards over novelty.
 
 * 1. Philosophy
 
 *Borrow standards, never invent.* Unix CLI conventions, Python SDK conventions
 (exceptions for failure, return values for success), pytest, PEP 8/257,
-stdlib first. No custom error taxonomies, no bespoke JSON error metadata,
-no hint systems.
+stdlib first. No custom error taxonomies, no bespoke JSON error metadata.
 
-*80/20 pragmatism.* Solve the real problem cleanly. No plugin systems, no retry engines, no DI, no logging frameworks, no metrics, no machine-readable error classification in JSON, no excessive option flags.
+*80/20 pragmatism.* Solve the real problem cleanly. No plugin systems, no DI,
+no logging frameworks, no metrics, no excessive option flags.
 
 *Minimal simplicity.* Best code is code that doesn't exist. Functions over
-classes when stateless. Dataclasses over custom objects. Explicit over magic.
-Small modules, one responsibility. Clear boring names. Fewer deps, fewer public
-options, fewer layers. Every abstraction earns its place.
+classes when stateless. Dataclasses over custom objects. Small modules, one
+responsibility. Every abstraction earns its place.
 
 *Unix philosophy.* stdout = data. stderr = diagnostics. exit codes = scripts.
-stdin = piping. Predictable flags. Useful help. No chatty output unless asked.
-Success → print result to stdout, exit 0. Failure → short diagnostic to stderr,
-exit non-zero.
+stdin = piping. Success → print result to stdout, exit 0. Failure → short
+diagnostic to stderr, exit non-zero.
 
-*Longevity.* Stable Python features. Mature libraries. Obvious boundaries.
-Simple data structures. Explicit contracts. Small public APIs. Easy deletion.
-Avoid: trendy deps, excessive generics, over-clever typing, framework-imposed
-structure, internal DSLs, complicated state machines.
+*Longevity.* Stable Python features, mature libraries, obvious boundaries,
+easy deletion. Avoid: trendy deps, over-clever typing, internal DSLs.
 
 * 2. Architecture
 
 #+begin_src text
 pkit/
-├── __init__.py
-├── __main__.py          # python -m pkit
-├── cli.py               # BusyBox dispatcher (hand-rolled, no argparse needed)
-├── version.py           # lazy version resolution
+├── cli.py               # BusyBox dispatcher (no argparse needed)
+├── version.py           # version from installed distribution metadata
 ├── lib/                 # shared, tool-agnostic (the ONLY shared home)
-│   ├── cli.py           # exit codes, stdin, emit, fail, run_tool
+│   ├── cli.py           # exit codes, emit, fail, run_tool
 │   ├── config.py        # TOML file + environment, one precedence rule
 │   ├── http.py          # HttpClient: transport, timeout, HttpError, URL rewriting
 │   ├── shell.py         # run external commands
 │   ├── sql.py           # SQL builders: quoting, placeholders, filters, sorts, upserts
 │   └── sqlite.py        # connect, migrations, the Database base class
 ├── meta/
-│   ├── __main__.py      # python -m pkit.meta
 │   ├── cli.py           # dump / load / migrate / validate
 │   ├── config.py, db.py, models.py, serialize.py
 │   ├── dump.py, load.py, source.py
 │   ├── wikidata/        # extract.py (entity->values), plans.py, client.py
-│   └── migrations/      # SQL migrations
+│   └── migrations/      # one table per .sql file
 ├── archive/
-│   ├── __main__.py      # python -m pkit.archive
 │   ├── cli.py           # add/fix/copy/match/verify/drop/get/forget/...
 │   └── cas.py, db.py, errors.py, remote.py, rclone.py, wayback.py
 └── wayback/
-    ├── __main__.py      # python -m pkit.wayback
     ├── cli.py           # save (thin, argparse)
     └── client.py        # Wayback SDK client
 
 scripts/                 # project workflow helpers, outside the package
-└── meta-diff-fzf, archive-pack, archive-verify-sweep  # see scripts/README.org
+└── meta-diff-fzf, archive-pack, batch-run, batch-copy, batch-verify
 #+end_src
 
 Every tool has three entry points (console script ~pkit-<tool>~, BusyBox
@@ -68,192 +61,76 @@ each ~cli.py~, so all three stay in lockstep by construction.
 
 ** Boundaries
 
-| Rule                         |                                                                       |
-|------------------------------+-----------------------------------------------------------------------|
-| ~client.py~ / SDK modules    | Must NOT print, or know stdout/stderr/exit codes                      |
-| ~lib/cli.py~                 | Generic CLI plumbing ONLY; no tool-specific logic                     |
-| ~lib/config.py~              | Tool-agnostic config; scripts may import ~pkit.lib~ directly          |
-| ~lib/sql.py~, ~lib/sqlite.py~ | Tool-agnostic SQL builders and sqlite plumbing; reusable by scripts  |
-| ~lib/http.py~, ~lib/shell.py~ | Tool-agnostic; callers map errors to their own types                 |
-| URL rewriting                 | Only in ~lib/http.py~ (~proxy_prefix~, ~host_map~); SDKs store and return canonical URLs |
-| Wayback coercion             | Belongs in ~pkit/wayback/cli.py~                                      |
-| Version                      | Lives only in ~pyproject.toml~; use ~pkit.version.get_version()~      |
-| Version bumps                | Via ~make bump VERSION=x.y.z~ / ~make release VERSION=x.y.z~; never by hand |
+| Rule                          |                                                                        |
+|-------------------------------+------------------------------------------------------------------------|
+| SDK modules (~client.py~, ~db.py~) | Must NOT print, or know stdout/stderr/exit codes                 |
+| ~lib/*~                       | Tool-agnostic only; scripts may import ~pkit.lib~ directly            |
+| URL rewriting                 | Only in ~lib/http.py~ (~proxy_prefix~, ~host_map~); SDKs return canonical URLs |
+| Version                       | Lives in ~pyproject.toml~; ~pkit.version.get_version()~ reads the installed metadata |
+| Version bumps                 | Via ~make bump VERSION=x.y.z~ / ~make release VERSION=x.y.z~; never by hand |
 
 ** SDK layer (library-only)
 
-- Success returns structured dataclasses.
-- Failure raises typed exceptions — never ~result.error~ strings.
-- HTTP via ~pkit.lib.http.HttpClient~; external commands via ~pkit.lib.shell.run~.
-  Clients are context managers and closeable. SDK classes accept an injected
-  ~http=~ (and ~client=~) so tests can substitute a fake per instance.
-- No printing, no CLI concerns, no exit calls.
+Success returns frozen dataclasses; failure raises typed exceptions. HTTP via
+~pkit.lib.http.HttpClient~; external commands via ~pkit.lib.shell.run~.
+Clients are context managers and accept an injected ~http=~ so tests can
+substitute a fake per instance.
 
 ** CLI layer (thin)
 
 stdlib argparse; ~main(argv) -> int~ built on ~pkit.lib.cli.run_tool~.
-Parse args → read stdin if appropriate → call SDK → print success to stdout →
-print errors to stderr → return the exit code. No deep business logic.
-
-** Command design
-
-One primary action per command. Predictable args and flags. Useful ~--help~.
-Minimal required options. stdin support where natural. ~--json~ where useful.
-Avoid: many positional args, flag explosion, mode flags that radically change
-behavior, interactive prompts in pipeable tools, required config files.
+Parse args → call SDK → print to stdout or fail to stderr → return the exit
+code. ~--json~ affects success output only.
 
 * 3. Contracts
 
 ** Exit codes
 
-| Code | Meaning                                                   |
-|------+-----------------------------------------------------------|
-|    0 | Success                                                   |
-|    1 | Unknown / unexpected failure (retry not assumed safe)     |
-|    2 | Usage / input / auth / config error (user can fix)        |
-|   75 | Temporary failure, retry later (BSD ~EX_TEMPFAIL~)        |
+| Code | Meaning                                               |
+|------+-------------------------------------------------------|
+|    0 | Success                                               |
+|    1 | Unknown / unexpected failure (retry not assumed safe) |
+|    2 | Usage / input / auth / config error (user can fix)    |
+|   75 | Temporary failure, retry later (BSD ~EX_TEMPFAIL~)    |
 
-Collapsing 75 → 1 is acceptable if simplicity wins, but never silently mix
-usage errors with unknown failures.
+** stdout / stderr / stdin
 
-** stdout / stderr
+- *stdout*: data only. Plain = one useful value or summary line. JSON =
+  structured success object.
+- *stderr*: short human-readable diagnostics (~Error: No target URL provided.~).
+- *stdin*: when a command's primary argument is omitted or ~-~, read the
+  first non-empty line (e.g. ~echo https://example.com | pkit wayback save~).
+  An interactive TTY never blocks.
 
-- *stdout*: data only. Plain = one useful value (e.g. archive URL). JSON = structured success object.
-- *stderr*: short human-readable diagnostics. ~Error: No target URL provided.~
-- Never print errors to stdout.
+* 4. Style
 
-** stdin
+Python 3.13+. Type hints on public interfaces. Frozen dataclasses for result
+values. Short clear names, small functions. Comments explain *why*, not what.
 
-- If URL argument is explicitly provided, stdin is ignored.
-- If URL is omitted or ~"-"~, read stdin.
-- Interactive TTY stdin with no URL → treat as no input.
-- Plain mode: first non-empty line, ignore trailing whitespace.
-- JSON mode (~--json~): parse stdin as JSON. Object → extract primary key (~url~) + allow override of selected CLI flags. Scalar → use as primary value. Invalid JSON → treat entire payload as plain text.
-- Do not require JSON for simple piping.
+Naming: clear and boring (~save_url~, ~job_id~, ~read_stdin_line~). Avoid
+non-obvious abbreviations, cute names, generic names (~manager~, ~handler~).
 
-** JSON output
+* 5. Dependencies
 
-~--json~ affects successful output only. No custom error metadata
-(~error_class~, ~error_hint~, ~error_type~, ~error_code~, ~retryable~)
-unless a real consumer requires them. Scripts rely on exit code + stderr.
+stdlib first; pkit has zero runtime dependencies. A dependency is accepted
+only if it removes significant code *and* is stable. Packaging stays in the
+pip family: ~venv~ + ~pip~ + ~pip-tools~ + ~pipx~ (see
+[[file:docs/workflow.org][docs/workflow.org]]).
 
-* 4. Error Handling
+* 6. Testing
 
-** SDK exceptions
+pytest, fakes only at boundaries pkit does not own: the network transport
+(~FakeHttpClient~ in ~tests/conftest.py~), the rclone binary, remote
+backends. sqlite and the filesystem are always real. CLI tests call
+~main([...])~ directly via the ~run_cli~ fixture.
 
-#+begin_src text
-WaybackError      base SDK error
-InputError        invalid user input
-AuthError         authentication / authorization failure
-RateLimitError    rate limiting / queue pressure
-JobTimeoutError   queue wait / job poll timeout
-JobFailedError    remote job failed
-#+end_src
+A few meaningful tests > many brittle tests. Tests serve as executable
+documentation of the contract.
 
-Typed exceptions, not error strings in result objects.
+* 7. Docs
 
-** CLI mapping
-
-#+begin_src text
-InputError       → 2
-AuthError        → 2
-RateLimitError   → 75
-JobTimeoutError  → 75
-JobFailedError   → 1
-WaybackError     → 1
-unexpected Exception → 1
-#+end_src
-
-Do not expose exception class names to users unless useful for debugging.
-Do not invent error hint strings.
-
-* 5. Style
-
-- Python 3.13+. ~from __future__ import annotations~.
-- Type hints on all public interfaces. Simple explicit return types.
-- Frozen dataclasses for result values when practical.
-- Short clear names. Small functions. Module + public function docstrings.
-- Comments explain *why*, not what.
-- Clarity over brevity.
-- Avoid: clever one-liners, deep inheritance, excessive typing machinery,
-  runtime decorators unless clearly useful, mutable global state, hidden
-  side effects.
-
-** Naming
-
-Clear, boring: ~save_url~, ~archive_url~, ~job_id~, ~lock_file~,
-~proxy_prefix~, ~read_stdin_payload~, ~emit_result~, ~fail~.
-Avoid: non-obvious abbreviations, cute names, generic names
-(~manager~, ~handler~, ~processor~), redundant prefixes,
-implementation-detail names.
-
-* 6. Dependencies
-
-Prefer: stdlib (argparse for CLIs, urllib.request for HTTP), pytest. Do NOT add
-deps for: logging, configuration, validation, retry, schema enforcement, CLI
-generation, DI, rich output, progress bars, metrics, HTTP mocking. A
-dependency is accepted only if it removes significant code *and* is stable.
-pkit itself has zero runtime dependencies.
-
-Packaging and environments stay in the pip family: ~venv~ + ~pip~ install,
-~pip-tools~ (~pip-compile~) hash-locks dependencies from ~pyproject.toml~
-(~requirements.txt~ and ~requirements-dev.txt~ via ~make lock~), and ~pipx~
-(pip backend forced) installs the CLI globally via ~make install~. No ~uv~,
-no hand-rolled locking. See [[file:docs/workflow.org][docs/workflow.org]].
-
-* 7. Testing
-
-pytest. Fixtures for shared setup. Small focused unit tests. A few integration
-tests. HTTP is faked at the transport: ~FakeHttpClient~ (in ~tests/conftest.py~)
-stands in for ~HttpClient~ per instance, and a real local ~http.server~ covers
-transport-level behavior with no mock at all. rclone is faked at ~shell.run~.
-sqlite and the filesystem are always real (~tmp_path~). CLI tests call
-~main([...])~ directly with capsys and faked stdin (~run_cli~ in conftest.py).
-
-*Test:* stdin behavior, option coercion, CLI success output, CLI exit codes,
-stderr messages, SDK exception mapping, SDK success result shape, HTTP error
-mapping, JSON success output.
-
-*Do NOT test:* real Wayback availability, real queue capacity, real
-rate-limit thresholds, real email delivery, real upstream semantics, real
-network instability, true distributed lock contention.
-
-A few meaningful tests > many brittle tests.
-
-* 8. Documentation
-
-Short and practical. One-line summaries. Concrete examples. Contract
-descriptions. Exit-code tables. Env-var docs. Clear error examples.
-Avoid: marketing language, excessive narrative, duplicated implementation
-details, speculative roadmaps. Docstrings explain intent and contract,
-not restate code.
-
-* 9. Migration & Refactoring
-
-*Target contract:* SDK raises typed exceptions. CLI prints success/stdout,
-errors/stderr, stable exit codes. ~--json~ affects success output only.
-No custom JSON error metadata.
-
-Old code using ~result.error~ or JSON error output → migrate in small steps
-when touching it. Do not expand old patterns. Do not add features on
-deprecated patterns.
-
-*Refactoring:* preserve behavior unless explicitly changing contract.
-Keep diffs small. No renaming public interfaces without reason. No reformatting
-unrelated code. No new dependencies. No new abstractions while fixing local
-issues. Prefer removing code over adding. If a refactor grows large, stop and
-simplify scope.
-
-* 10. Review Checklist
-
-- Borrows an existing standard?
-- Solves the current problem only?
-- Simplest version that works?
-- SDK avoids CLI concerns? CLI avoids business logic?
-- stdout = data only? stderr = diagnostics only?
-- Exit codes correct? Errors simple and scriptable?
-- Tests focused on behavior we control?
-- No unnecessary abstraction? No new dependencies?
-- Makes sense in five years? Easy to delete?
+Short and practical, examples over narrative: this guide,
+[[file:docs/meta.org][docs/meta.org]], [[file:docs/archive.org][docs/archive.org]],
+[[file:docs/wayback.org][docs/wayback.org]], [[file:scripts/README.org][scripts/README.org]].
 
 *When in doubt: smaller, simpler, more boring.*

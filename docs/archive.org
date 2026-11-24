@@ -123,10 +123,10 @@ Staging uses the rclone remote ~pkit-archive:~. Staging is *temporary and never 
 only the Wayback capture is.
 
 Wayback captures are registered unverified because CDX indexing lags. Run
-~verify~ later — a sharded daily sweep works well:
+~verify~ later — a sharded, resumable daily sweep works well:
 
 #+begin_src sh
-scripts/archive-verify-sweep --shard "$(date +%-d)" --delay 5   # one daily shard, rate-limited
+scripts/batch-verify --shard "$(date +%-d)" --delay 5 logs/verify-$(date +%Y-%m).tsv
 scripts/archive-pack -r age1... -s 100M big-dir/                 # deterministic, encrypted, chunked
 #+end_src
 

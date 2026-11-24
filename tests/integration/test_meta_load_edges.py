@@ -29,10 +29,7 @@ class FakeSource:
         self.items = items
         self.plans = plans
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
+    def close(self):
         return None
 
     def match(self, url: str):
@@ -78,7 +75,7 @@ def fake_source(monkeypatch):
 
 def _text_by_source_id(db_path, key: str) -> Text:
     with MetaDB(db_path) as db:
-        record = db.get(f"fake:{key}", by="identifiers")
+        record = db.find_one(where={"identifiers": f"fake:{key}"})
     assert isinstance(record, Text)
     return record  # narrowed by the assert above
 
@@ -142,7 +139,7 @@ def test_load_expected_model_wins_over_item_shape(fake_source, db_path):
     assert load.load("fake:Q1", db_path=db_path) == 2
 
     with MetaDB(db_path) as db:
-        author = db.get("fake:Q2", by="identifiers")
+        author = db.find_one(where={"identifiers": "fake:Q2"})
     assert isinstance(author, Person)
     assert author.name == ""
 
@@ -161,7 +158,7 @@ def test_load_link_keys_empty_and_duplicate_entries(fake_source, db_path):
 
 def _person_id(db_path, canonical: str) -> str:
     with MetaDB(db_path) as db:
-        person = db.get(f"fake:{canonical}", by="identifiers")
+        person = db.find_one(where={"identifiers": f"fake:{canonical}"})
     assert isinstance(person, Person)
     return person.id
 
@@ -405,7 +402,7 @@ def test_wikidata_redirect_answer_uses_the_canonical_id(wikidata, db_path):
     assert load.load("wikidata:Q99", db_path=db_path) == 1
 
     with MetaDB(db_path) as db:
-        record = db.get("wikidata:Q100", by="identifiers")
+        record = db.find_one(where={"identifiers": "wikidata:Q100"})
     assert isinstance(record, Text)
     assert record.title == "Redirected"
 
@@ -437,7 +434,7 @@ def test_wikidata_labelless_entity_imports_with_empty_fields(wikidata, db_path):
 
 def _wikidata_record(db_path, key: str, cls):
     with MetaDB(db_path) as db:
-        record = db.get(f"wikidata:{key}", by="identifiers")
+        record = db.find_one(where={"identifiers": f"wikidata:{key}"})
     assert isinstance(record, cls)
     return record
 

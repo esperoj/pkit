@@ -117,44 +117,15 @@ def test_save_reads_plain_stdin_first_line(run_cli, patch_save_url):
     assert calls[0]["url"] == "http://stdin"
 
 
-def test_save_reads_json_object_from_stdin(run_cli, patch_save_url):
+def test_save_reads_json_payload_url_from_stdin(run_cli, patch_save_url):
+    # --json affects output only; stdin stays one plain URL per line
     calls = patch_save_url(success_result)
-    payload = {
-        "url": "http://json",
-        "capture_all": "1",  # truthy string
-        "email_result": "off",  # falsey string
-        "capture_outlinks": 0,  # non-string falsey
-        "force_get": True,  # non-string truthy
-        "bogus": True,  # unknown field: ignored
-    }
-    code, out, err = run_cli(main, save_cmd("--json"), input=json.dumps(payload))
+    code, out, err = run_cli(main, save_cmd("--json"), input='{"url": "http://json"}\n')
 
     assert code == 0, err
-    assert calls[0]["url"] == "http://json"
-    opts = calls[0]["opts"]
-    assert opts.capture_all is True
-    assert opts.email_result is False
-    assert opts.capture_outlinks is False
-    assert opts.force_get is True
-    assert opts.skip_first_archive is False
+    assert calls[0]["url"] == '{"url": "http://json"}'
     output = json.loads(out)
-    assert output["url"] == "http://json"
-
-
-def test_save_reads_json_scalar_from_stdin(run_cli, patch_save_url):
-    calls = patch_save_url(success_result)
-    code, _out, err = run_cli(main, save_cmd("--json"), input='"http://scalar"')
-
-    assert code == 0, err
-    assert calls[0]["url"] == "http://scalar"
-
-
-def test_save_invalid_json_stdin_is_treated_as_url(run_cli, patch_save_url):
-    calls = patch_save_url(success_result)
-    code, _out, err = run_cli(main, save_cmd("--json"), input="http://raw")
-
-    assert code == 0, err
-    assert calls[0]["url"] == "http://raw"
+    assert output["url"] == '{"url": "http://json"}'
 
 
 def test_save_dash_reads_stdin(run_cli, patch_save_url):

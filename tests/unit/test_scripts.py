@@ -1,11 +1,9 @@
 """Smoke tests for the scripts/ helpers.
 
 Cover shell syntax, argument validation, clean fallbacks when optional
-binaries (fzf, age, parallel, zstd, split) are missing, and archive-pack's
-contract: top-folder-only relative members, real mtimes/modes/owner names,
-symlinks, hardlinks, sparse holes, xattrs, verification on by default,
-zstd -19 + checksum, 256M chunks named .part-001 upward, small results left
-whole. Interactive flows: see scripts/README.org.
+binaries (fzf, age, parallel, zstd, split) are missing, archive-pack's
+contract, and the batch scripts' joblog/resume/retry contract over GNU
+parallel. Interactive flows: see scripts/README.org.
 """
 
 import json
@@ -15,6 +13,7 @@ import random
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -23,11 +22,14 @@ from pkit.lib import shell
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 BASH = shutil.which("bash") or "/bin/bash"
-ALL_SCRIPTS = ("meta-diff-fzf", "archive-pack", "archive-verify-sweep")
+ALL_SCRIPTS = ("meta-diff-fzf", "archive-pack", "batch-run", "batch-copy", "batch-verify")
 needs_zstd = pytest.mark.skipif(shutil.which("zstd") is None, reason="zstd not installed")
 needs_age = pytest.mark.skipif(
     shutil.which("age") is None or shutil.which("age-keygen") is None,
     reason="age / age-keygen not installed",
+)
+needs_parallel = pytest.mark.skipif(
+    shutil.which("parallel") is None, reason="GNU parallel not installed"
 )
 NS = 1_234_567_890_123_456_789
 BOOK_MEMBERS = ["book/", "book/a.txt", "book/b.txt"]
@@ -71,6 +73,47 @@ def restricted_path(tmp_path: Path, *tools: str) -> str:
         found = shutil.which(tool)
         if found is not None:
             bin_dir.joinpath(tool).symlink_to(found)
+    return str(bin_dir)
+
+
+# Everything the batch scripts shell out to (bash builtins aside).
+BATCH_TOOLS = (
+    "parallel",
+    "find",
+    "sort",
+    "awk",
+    "grep",
+    "sed",
+    "cat",
+    "cmp",
+    "tr",
+    "od",
+    "tail",
+    "wc",
+    "mkdir",
+    "mktemp",
+    "rm",
+    "readlink",
+    "dirname",
+    "perl",
+    "bash",
+    "sh",
+    "env",
+)
+
+
+def batch_path(tmp_path: Path, *hide: str) -> str:
+    """A PATH with the tools the batch scripts need, minus `hide`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for tool in BATCH_TOOLS:
+        if tool in hide:
+            continue
+        target = bin_dir / tool
+        if tool not in hide and not target.exists():
+            found = shutil.which(tool)
+            if found is not None:
+                target.symlink_to(found)
     return str(bin_dir)
 
 
@@ -616,42 +659,338 @@ class TestArchivePackEncryption:
         assert (dest / "book" / "random.bin").read_bytes() == (source / "random.bin").read_bytes()
 
 
-class TestArchiveVerifySweep:
-    @pytest.mark.parametrize("shard", ["5/3", "abc", "0/4", "1/0", "/4"])
-    def test_invalid_shard_fails_cleanly(self, tmp_path, shard):
-        result = run_script("archive-verify-sweep", "--shard", shard, str(tmp_path))
-        assert result.returncode == 2, shard
-        assert "invalid shard" in result.stderr
+class TestBatchRun:
+    """The engine: joblog, resume-without-repeat, retry, safe filenames."""
 
-    def test_unknown_option_fails_cleanly(self, tmp_path):
-        result = run_script("archive-verify-sweep", "--bogus", str(tmp_path))
+    def run(self, *args, items=None, cwd=None):
+        return subprocess.run(
+            [BASH, str(SCRIPTS / "batch-run"), *args],
+            input=items if items is None else items.decode() if isinstance(items, bytes) else items,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=None if cwd is None else str(cwd),
+        )
+
+    def joblog_rows(self, log: Path):
+        return [
+            line.split("\t") for line in log.read_text().splitlines() if line and line[0].isdigit()
+        ]
+
+    def test_runs_every_item_and_records_the_joblog(self, tmp_path):
+        log = tmp_path / "batch.tsv"
+        result = self.run("--log", str(log), "--", "echo", "hi-{}", items="a\nb\nc\n")
+
+        assert result.returncode == 0, result.stderr
+        assert "3 ok, 0 failed, 0 skipped" in result.stderr
+        assert len(self.joblog_rows(log)) == 3
+
+    def test_failed_jobs_exit_one_and_are_listed(self, tmp_path):
+        log = tmp_path / "batch.tsv"
+        result = self.run(
+            "--log", str(log), "--", "case {} in b) exit 3;; esac; echo ok-{}", items="a\nb\n"
+        )
+
+        assert result.returncode == 1
+        assert "1 ok, 1 failed" in result.stderr
+        assert "failed jobs" in result.stderr
+        assert "case b in" in result.stderr
+
+    def test_resume_skips_succeeded_and_retries_failed(self, tmp_path):
+        log = tmp_path / "batch.tsv"
+        fail = "case {} in b) exit 3;; esac; echo ok-{}"
+        first = self.run("--log", str(log), "--", fail, items="a\nb\n")
+        assert first.returncode == 1
+
+        fixed = "echo ok-{}"
+        second = self.run("--log", str(log), "--", fixed, items="a\nb\n")
+
+        assert second.returncode == 0, second.stderr
+        assert "1 ok, 0 failed, 1 skipped" in second.stderr
+        assert len(self.joblog_rows(log)) == 3  # two + the retried failure
+
+    def test_fresh_discards_the_joblog(self, tmp_path):
+        log = tmp_path / "batch.tsv"
+        self.run("--log", str(log), "--", "echo one-{}", items="x\n")
+        result = self.run("--log", str(log), "--fresh", "--", "echo two-{}", items="x\n")
+
+        assert result.returncode == 0
+        assert "1 ok, 0 failed, 0 skipped" in result.stderr
+        assert "two-x" in result.stdout
+
+    def test_nul_separated_items_with_spaces_quotes_and_newlines(self, tmp_path):
+        log = tmp_path / "batch.tsv"
+        items = b"plain\0with space\0with'quote\0with\"dq\0" + b"new\nline\0"
+        first = self.run("--log", str(log), "--", "echo got-{}", items=items)
+
+        assert first.returncode == 0, first.stderr
+        assert "5 ok, 0 failed" in first.stderr
+        # the resume path must recognize them too, not re-run
+        second = self.run("--log", str(log), "--", "echo got-{}", items=items)
+        assert "0 ok, 0 failed, 5 skipped" in second.stderr
+
+    def test_empty_stdin_is_a_clean_no_op(self, tmp_path):
+        result = self.run("--log", str(tmp_path / "batch.tsv"), "--", "echo", "x-{}", items="")
+
+        assert result.returncode == 0
+        assert "0 items" in result.stderr
+
+    def test_missing_log_or_command_is_a_usage_error(self, tmp_path):
+        assert self.run("--", "echo", "{}").returncode == 2
+        assert self.run("--log", str(tmp_path / "b.tsv")).returncode == 2
+
+    def test_unknown_option_fails_cleanly(self):
+        result = self.run("--bogus", "--", "echo", "{}")
         assert result.returncode == 2
         assert "unknown option" in result.stderr
 
-    def test_missing_tree_fails_cleanly(self, tmp_path):
-        result = run_script("archive-verify-sweep", str(tmp_path / "nope"))
-        assert result.returncode == 2
-        assert "no such directory" in result.stderr
-
-    def test_no_cas_links_exits_one(self, tmp_path):
-        empty = tmp_path / "tree"
-        empty.mkdir()
-        result = run_script(
-            "archive-verify-sweep",
-            str(empty),
-            path=restricted_path(tmp_path, "find", "sed", "grep", "sort", "awk"),
-        )
-        assert result.returncode == 1
-        assert "no CAS-linked files" in result.stderr
+    def test_bad_jobs_or_delay_value_fails_cleanly(self):
+        for bad in (["--jobs", "0"], ["--jobs", "x"], ["--delay", "-1"], ["--delay", "soon"]):
+            result = self.run("--log", "x.tsv", *bad, "--", "echo", "{}")
+            assert result.returncode == 2, bad
 
     def test_missing_parallel_fails_cleanly(self, tmp_path):
-        tree_dir = tmp_path / "tree"
-        tree_dir.mkdir()
-        (tree_dir / "obj").symlink_to("../cas/" + "a" * 64)
         result = run_script(
-            "archive-verify-sweep",
-            str(tree_dir),
-            path=restricted_path(tmp_path, "find", "sed", "grep", "sort", "awk"),
+            "batch-run",
+            "--log",
+            str(tmp_path / "b.tsv"),
+            "--",
+            "echo",
+            "{}",
+            path=restricted_path(tmp_path),
         )
         assert result.returncode == 2
         assert "missing required tool: GNU parallel" in result.stderr
+
+    def test_interrupted_batch_resumes_without_repeating(self, tmp_path):
+        log = tmp_path / "batch.tsv"
+        items = "\n".join(str(i) for i in range(1, 13)) + "\n"
+        import signal
+
+        proc = subprocess.Popen(
+            [
+                BASH,
+                str(SCRIPTS / "batch-run"),
+                "--log",
+                str(log),
+                "--jobs",
+                "2",
+                "--",
+                "sleep 0.4; echo done-{}",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,  # own process group, so the whole batch is signaled
+        )
+        assert proc.stdin is not None
+        proc.stdin.write(items)
+        proc.stdin.close()
+        time.sleep(1.2)  # ~2 of the 12 jobs finish
+        os.killpg(proc.pid, signal.SIGINT)
+        proc.wait(timeout=10)
+        done_before = len(self.joblog_rows(log))
+        assert 0 < done_before < 12
+
+        resumed = subprocess.run(
+            [
+                BASH,
+                str(SCRIPTS / "batch-run"),
+                "--log",
+                str(log),
+                "--jobs",
+                "6",
+                "--",
+                "sleep 0.4; echo done-{}",
+            ],
+            input=items,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert resumed.returncode == 0, resumed.stderr
+        ok = sum(1 for row in self.joblog_rows(log) if row[6] == "0")
+        assert ok == 12
+
+
+class TestBatchCopy:
+    """Directory expansion, failure isolation, resume without repetition."""
+
+    def make_sources(self, tmp_path: Path) -> Path:
+        src = tmp_path / "src"
+        (src / "sub").mkdir(parents=True)
+        (src / "a file.txt").write_text("one")
+        (src / "sub" / "b's file.txt").write_text("two")
+        (src / "broken.bin").write_text("nope")
+        return src
+
+    def test_copies_each_file_and_reports_one_failure(self, tmp_path):
+        src = self.make_sources(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        log = tmp_path / "copy.tsv"
+        cmd = f"cp {{}} {dest}/{{/}} && ! grep -q nope {{}}"
+
+        result = run_script("batch-copy", str(log), str(src), "--", cmd)
+
+        assert result.returncode == 1
+        assert "2 ok, 1 failed, 0 skipped" in result.stderr
+        assert (dest / "a file.txt").read_text() == "one"
+        assert not (dest / "broken.bin").exists() or (dest / "broken.bin").exists()
+
+    def test_resume_retries_only_the_failed_file(self, tmp_path):
+        src = self.make_sources(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        log = tmp_path / "copy.tsv"
+        fail = f"cp {{}} {dest}/{{/}} && ! grep -q nope {{}}"
+        run_script("batch-copy", str(log), str(src), "--", fail)
+        touched = dest / "a file.txt"
+        first_mtime = touched.stat().st_mtime_ns
+
+        result = run_script("batch-copy", str(log), str(src), "--", f"cp {{}} {dest}/{{/}}")
+
+        assert result.returncode == 0, result.stderr
+        assert "1 ok, 0 failed, 2 skipped" in result.stderr
+        assert touched.stat().st_mtime_ns == first_mtime  # successes never rerun
+
+    def test_single_files_and_missing_sources(self, tmp_path):
+        src = self.make_sources(tmp_path)
+        log = tmp_path / "copy.tsv"
+        result = run_script("batch-copy", str(log), str(src / "a file.txt"), "--", "echo copy-{}")
+        assert result.returncode == 0, result.stderr
+        assert "copy-" + str(src / "a file.txt") in result.stdout
+
+        result = run_script("batch-copy", str(log), str(tmp_path / "nope"), "--", "echo {}")
+        assert result.returncode == 2
+        assert "no such file or directory" in result.stderr
+
+    def test_no_files_found_is_an_error(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = run_script("batch-copy", str(tmp_path / "c.tsv"), str(empty), "--", "echo {}")
+        assert result.returncode == 2
+        assert "no files found" in result.stderr
+
+    def test_directories_skip_git_internals(self, tmp_path):
+        src = tmp_path / "src"
+        (src / ".git" / "objects").mkdir(parents=True)
+        (src / "book one.cbz").write_text("keep")
+        (src / ".git" / "objects" / "abc").write_text("skip")
+
+        result = run_script("batch-copy", str(tmp_path / "c.tsv"), str(src), "--", "echo {/}")
+
+        assert result.returncode == 0, result.stderr
+        assert "book one.cbz" in result.stdout
+        assert "abc" not in result.stdout
+
+    def test_missing_command_is_a_usage_error(self, tmp_path):
+        result = run_script("batch-copy", str(tmp_path / "c.tsv"), str(tmp_path))
+        assert result.returncode == 2
+        assert "no COMMAND given" in result.stderr
+
+
+class TestBatchVerify:
+    """CAS-link collection, hash dedup, sharding, default command."""
+
+    def make_tree(self, tmp_path: Path) -> Path:
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        for content, name in (
+            (b"aaa", "good one.cbz"),
+            (b"aaa", "dup of good.cbz"),
+            (b"bad", "broken.cbz"),
+        ):
+            digest = __import__("hashlib").sha256(content).hexdigest()
+            (tree / name).symlink_to(f"../cas/{digest[:2]}/{digest}")
+        (tree / "foreign").symlink_to("/elsewhere/doc")
+        return tree
+
+    def stub_pkit(self, tmp_path: Path) -> str:
+        """A PATH with a pkit that fails checks for links named 'broken*'."""
+        path = batch_path(tmp_path)
+        (tmp_path / "bin" / "pkit").write_text(
+            f"#!{BASH}\ncase \"$3\" in *broken*) exit 1;; esac\necho 'local\tok'\n"
+        )
+        (tmp_path / "bin" / "pkit").chmod(0o755)
+        return path
+
+    def test_verifies_one_job_per_hash_and_reports_failures(self, tmp_path):
+        tree = self.make_tree(tmp_path)
+        log = tmp_path / "v.tsv"
+
+        result = run_script("batch-verify", str(log), str(tree), path=self.stub_pkit(tmp_path))
+
+        assert result.returncode == 1
+        assert "2 items" in result.stderr  # dup deduped to one job
+        assert "1 ok, 1 failed" in result.stderr
+
+    def test_resume_retries_only_failed_checks(self, tmp_path):
+        tree = self.make_tree(tmp_path)
+        log = tmp_path / "v.tsv"
+        path = self.stub_pkit(tmp_path)
+        run_script("batch-verify", str(log), str(tree), path=path)
+        # a pkit that accepts everything: only the failed check reruns
+        (tmp_path / "bin" / "pkit").write_text(f"#!{BASH}\necho 'local\tok'\n")
+
+        result = run_script("batch-verify", str(log), str(tree), path=path)
+
+        assert result.returncode == 0, result.stderr
+        assert "1 ok, 0 failed, 1 skipped" in result.stderr
+
+    def test_shard_selects_a_stable_subset(self, tmp_path):
+        tree = self.make_tree(tmp_path)
+        log = tmp_path / "v.tsv"
+        seen = []
+        for shard in ("1/2", "2/2"):
+            result = run_script(
+                "batch-verify",
+                "--shard",
+                shard,
+                str(log.with_name(f"s{shard.replace('/', '-')}.tsv")),
+                str(tree),
+                path=self.stub_pkit(tmp_path),
+            )
+            seen.append(result.returncode)
+        # both shards together cover the two ids exactly once
+        assert sum(seen) == 1  # exactly one shard saw the broken id fail
+
+    @pytest.mark.parametrize("shard", ["5/3", "abc", "0/4", "1/0", "/4", ""])
+    def test_invalid_shard_fails_cleanly(self, tmp_path, shard):
+        result = run_script("batch-verify", "--shard", shard, str(tmp_path / "v.tsv"), ".")
+        assert result.returncode == 2, shard
+        assert "invalid shard" in result.stderr
+
+    def test_missing_tree_fails_cleanly(self, tmp_path):
+        result = run_script("batch-verify", str(tmp_path / "v.tsv"), str(tmp_path / "nope"))
+        assert result.returncode == 2
+        assert "no such directory" in result.stderr
+
+    def test_no_cas_links_exits_two(self, tmp_path):
+        empty = tmp_path / "tree"
+        empty.mkdir()
+        result = run_script(
+            "batch-verify", str(tmp_path / "v.tsv"), str(empty), path=self.stub_pkit(tmp_path)
+        )
+        assert result.returncode == 2
+        assert "no CAS-linked files" in result.stderr
+
+    def test_command_override_replaces_pkit(self, tmp_path):
+        tree = self.make_tree(tmp_path)
+        log = tmp_path / "v.tsv"
+        path = batch_path(tmp_path)  # no pkit anywhere
+
+        result = run_script("batch-verify", str(log), str(tree), "--", "echo check-{}", path=path)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count("check-") == 2
+
+    def test_missing_pkit_without_override_fails_cleanly(self, tmp_path):
+        tree = self.make_tree(tmp_path)
+        result = run_script(
+            "batch-verify", str(tmp_path / "v.tsv"), str(tree), path=batch_path(tmp_path)
+        )
+        assert result.returncode == 2
+        assert "missing required tool: pkit" in result.stderr

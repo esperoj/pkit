@@ -12,16 +12,15 @@ Tool options come before the command; save options after it:
 import argparse
 import dataclasses
 from collections.abc import Sequence
-from typing import Any
 
 from pkit.lib.cli import (
     EXIT_ERROR,
     EXIT_OK,
     EXIT_TEMPFAIL,
     EXIT_USAGE,
-    emit_result,
+    emit,
     fail,
-    read_stdin_payload,
+    read_stdin_line,
     run_tool,
 )
 from pkit.version import get_version
@@ -44,22 +43,7 @@ __all__ = ["DESCRIPTION", "main"]
 DESCRIPTION = "Save URLs to the Wayback Machine (SPN2)."
 
 _OPTION_FIELDS = {field.name for field in dataclasses.fields(SaveOptions)}
-_FALSE_STRINGS = {"", "0", "false", "no", "off"}
 _DEFAULTS = SaveOptions()
-
-
-def _as_bool(value: Any) -> bool:
-    """Coerce JSON option values into booleans."""
-    if isinstance(value, str):
-        return value.strip().lower() not in _FALSE_STRINGS
-    return bool(value)
-
-
-def _save_options(args: argparse.Namespace, payload: dict[str, Any]) -> SaveOptions:
-    """Build SaveOptions from CLI flags; stdin JSON payload values win."""
-    values = {name: getattr(args, name) for name in _OPTION_FIELDS}
-    values.update({key: _as_bool(value) for key, value in payload.items() if key in _OPTION_FIELDS})
-    return SaveOptions(**values)
 
 
 def _exit_code_for_error(exc: Exception) -> int:
@@ -144,7 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         dest="json_output",
         action="store_true",
-        help="Output JSON. If URL is omitted or '-', read JSON from stdin.",
+        help="Output JSON.",
     )
     _add_flag(save, "capture_all", "Capture all embedded page resources.")
     _add_flag(save, "capture_outlinks", "Capture outgoing links.")
@@ -157,18 +141,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _save(args: argparse.Namespace) -> int:
     url = None if args.url == "-" else args.url
-    payload: dict[str, Any] = {}
-
-    # Unix convention:
-    #   - If URL is provided, stdin is ignored.
-    #   - If URL is omitted or "-", read from stdin.
+    # If URL is provided, stdin is ignored; omitted or '-', read one line.
     if url is None:
-        url, payload = read_stdin_payload(args.json_output, primary_key="url")
+        url = read_stdin_line()
 
     if not url:
         return fail("No target URL provided.", exit_code=EXIT_USAGE)
 
-    opts = _save_options(args, payload)
+    opts = SaveOptions(**{name: getattr(args, name) for name in _OPTION_FIELDS})
     with WaybackClient(
         api_key=args.api_key,
         api_secret=args.api_secret,
@@ -181,7 +161,7 @@ def _save(args: argparse.Namespace) -> int:
             result = client.save_url(url, opts=opts)
         except WaybackError as exc:
             return fail(str(exc), exit_code=_exit_code_for_error(exc))
-    emit_result(result, json_output=args.json_output, plain=lambda r: r.archive_url)
+    emit(result, result.archive_url, json_output=args.json_output)
     return EXIT_OK
 
 

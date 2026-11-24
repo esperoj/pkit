@@ -1,4 +1,4 @@
--- software.sql
+-- software: applications, libraries, OSes, video games.
 
 CREATE TABLE IF NOT EXISTS software (
     id TEXT PRIMARY KEY NOT NULL CHECK (id <> ''),

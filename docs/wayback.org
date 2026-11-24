@@ -32,21 +32,17 @@ Save options (each has a ~--no-~ counterpart):
 | ~--email~           | on      | Email notification when the job completes  |
 | ~--force-get~       | on      | Force GET instead of HEAD                  |
 | ~--skip-first~      | on      | Skip if the URL was recently saved         |
-| ~--json~            | off     | Output JSON; with stdin, parse JSON payloads |
+| ~--json~            | off     | Output JSON                                |
 
 * stdin
 
 If a URL argument is given, stdin is ignored. If the URL is omitted or
-~-~, stdin is read:
+~-~, the first non-empty stdin line is the URL:
 
 #+begin_src sh
 echo https://example.com | pkit wayback save
-echo '{"url": "https://example.com", "capture_all": true}' | pkit wayback save --json
+pkit wayback save - < urls.txt
 #+end_src
-
-Plain mode reads the first non-empty line. JSON mode parses objects
-(reading ~url~ plus any save options, overriding CLI flags) and scalars;
-invalid JSON is treated as a plain URL.
 
 * Output
 

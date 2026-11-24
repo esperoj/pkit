@@ -15,7 +15,6 @@ placeholders and sorts behave like every other pkit database.
 """
 
 import json
-import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -32,30 +31,21 @@ __all__ = ["MetaDB"]
 TIMESTAMP_COLUMNS = ("created_at", "updated_at")
 
 
+def _resolve_type(record_type: str | type[Record]) -> type[Record]:
+    """A type name or Record class to its registered class, validated."""
+    if isinstance(record_type, str):
+        if record_type not in RECORD_TYPES:
+            known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
+            raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
+        return RECORD_TYPES[record_type]
+    if not (isinstance(record_type, type) and issubclass(record_type, Record)):
+        raise TypeError(f"not a Record class: {record_type!r}")
+    return record_type
+
+
 def _sortable(cls: type[Record]) -> tuple[str, ...]:
     """Every column find() may sort by: id, slug, timestamps, scalar fields."""
     return ("id", "slug", *TIMESTAMP_COLUMNS, *cls.scalar_fields)
-
-
-def _resolve_type(record_type: str | type[Record] | None) -> type[Record] | None:
-    """A type name or Record class to its registered class, validated."""
-    if isinstance(record_type, type):
-        if not issubclass(record_type, Record):
-            raise TypeError(f"not a Record class: {record_type!r}")
-        record_type = type_name(record_type)
-    if record_type is None:
-        return None
-    if record_type not in RECORD_TYPES:
-        known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
-        raise ValueError(f"unknown record type {record_type!r}; known types: {known}")
-    return RECORD_TYPES[record_type]
-
-
-def _check_model(cls: type[Record], record_type: str | type[Record] | None) -> None:
-    """Raise when an explicit record_type disagrees with a resolved model."""
-    hint = _resolve_type(record_type)
-    if hint is not None and hint is not cls:
-        raise ValueError(f"record type {type_name(hint)!r} does not match {type_name(cls)!r}")
 
 
 def _field_kind(cls: type[Record], name: str) -> str | None:
@@ -89,45 +79,20 @@ def _condition(cls: type[Record], name: str, items: list[Any]) -> str:
 
 
 def _items(value: Any) -> list[Any] | None:
-    """Materialized filter values, or None when the value is absent or empty.
+    """Materialized filter values, or None when the value is empty.
 
     A single value stays a one-item list; a collection keeps its order minus
-    duplicates. None means absent (probes skip it, find rejects it); a
-    mapping is never a filter value and always raises.
+    duplicates. None means "no match"; a mapping is never a filter value and
+    always raises (find rejects None before reaching here).
     """
     if isinstance(value, Mapping):
         # a mapping is a wrong filter value shape, not a wrong argument type
         raise ValueError(f"not a filter value: {value!r}")  # noqa: TRY004 - tested contract
-    if value is None:
-        return None
     if isinstance(value, (str, bytes)):
         return [value] if value else None
     if isinstance(value, Iterable):
         return list(dict.fromkeys(value)) or None
     return [value]
-
-
-def _by_fields(by: str | Iterable[str] | None, default: tuple[str, ...]) -> tuple[str, ...]:
-    if by is None:
-        return default
-    if isinstance(by, str):
-        return (by,)
-    return tuple(by)
-
-
-def _probe_model(
-    data: Mapping[str, Any], record_type: str | type[Record] | None
-) -> type[Record] | None:
-    """The model named by a mapping probe's "type", or the record_type hint."""
-    name = data.get("type")
-    if name is None:
-        return _resolve_type(record_type)
-    if not isinstance(name, str) or name not in RECORD_TYPES:
-        known = ", ".join(sorted(RECORD_TYPES)) or "(none)"
-        raise ValueError(f"unknown record type {name!r}; known types: {known}")
-    cls = RECORD_TYPES[name]
-    _check_model(cls, record_type)
-    return cls
 
 
 def _prepare(record: Record | Mapping[str, Any]) -> Record:
@@ -183,14 +148,12 @@ class MetaDB(Database):
         *,
         migrations_dir: str | Path | None = None,
         readonly: bool = False,
-        auto_migrate: bool = True,
     ) -> None:
         cfg = meta_config.load()
         super().__init__(
             path if path is not None else cfg.db_path,
             migrations_dir=migrations_dir if migrations_dir is not None else cfg.migrations_dir,
             readonly=readonly,
-            auto_migrate=auto_migrate,
         )
 
     def put(self, record: Record | Mapping[str, Any]) -> Record:
@@ -218,186 +181,106 @@ class MetaDB(Database):
             )
         return record
 
-    def _lookup(
-        self,
-        target: str | Record | Mapping[str, Any],
-        *,
-        record_type: str | type[Record] | None = None,
-        by: str | Iterable[str] | None = None,
-        payload: bool = False,
-    ) -> sqlite3.Row | None:
-        """First row matching any non-empty probe field, or None.
-
-        One LIMIT 1 query per field (and per candidate model when no model is
-        pinned), so indexed columns and json_each scans never share one OR
-        clause. Empty values are skipped; the first hit wins.
-        """
-        if isinstance(target, Record):
-            cls = type(target)
-            _check_model(cls, record_type)
-            fields = _by_fields(by, cls.unique)
-            values: dict[str, Any] = {name: getattr(target, name) for name in fields}
-        elif isinstance(target, Mapping):
-            data = dict(target)
-            cls = _probe_model(data, record_type)
-            # typed probes match on the model's unique fields; untyped ones
-            # probe their own keys against the hinted (or all stored) models
-            if cls is not None and "type" in data:
-                default_fields = cls.unique
-            else:
-                default_fields = tuple(data.keys())
-            fields = _by_fields(by, default_fields)
-            values = {name: data.get(name) for name in fields}
-        else:
-            if not target:
-                return None
-            cls = _resolve_type(record_type)
-            fields = _by_fields(by, ("id",))
-            values = {name: target for name in fields}
-
-        if cls is not None:
-            for name in fields:
-                if _field_kind(cls, name) is None:
-                    raise ValueError(f"not a queryable field on {type_name(cls)}: {name!r}")
-        else:
-            for name in fields:
-                if not any(_field_kind(model, name) is not None for model in stored_models()):
-                    raise ValueError(f"no stored record type has a queryable field {name!r}")
-
-        for name in fields:
-            items = _items(values[name])
-            if items is None:
-                continue
-            models = (
-                (cls,)
-                if cls is not None
-                else tuple(
-                    model for model in stored_models() if _field_kind(model, name) is not None
-                )
-            )
-            for model in models:
-                expression = f"{_payload_sql(model)} AS payload" if payload else "1"
-                row = self.conn.execute(
-                    f"SELECT {expression} FROM {sql.quote(model.table)} "
-                    f"WHERE {_condition(model, name, items)} LIMIT 1",
-                    items,
-                ).fetchone()
-                if row is not None:
-                    return row
+    def get(self, record_id: str) -> Record | None:
+        """Fetch one record by id, searching every stored table. None when absent."""
+        if not record_id:
+            return None
+        for cls in stored_models():
+            row = self.conn.execute(
+                f"SELECT {_payload_sql(cls)} AS payload FROM {sql.quote(cls.table)} "
+                f"WHERE id = ? LIMIT 1",
+                (record_id,),
+            ).fetchone()
+            if row is not None:
+                return from_json(row["payload"])
         return None
-
-    def exists(
-        self,
-        target: str | Record | Mapping[str, Any],
-        *,
-        record_type: str | type[Record] | None = None,
-        by: str | Iterable[str] | None = None,
-    ) -> bool:
-        """Cheap presence check: no payload build, no JSON parse.
-
-        A str is probed by id unless by names other fields; Record and
-        mapping probes use their model's unique fields, skipping empty ones.
-        """
-        return self._lookup(target, record_type=record_type, by=by) is not None
-
-    def get(
-        self,
-        target: str | Record | Mapping[str, Any],
-        *,
-        record_type: str | type[Record] | None = None,
-        by: str | Iterable[str] | None = None,
-    ) -> Record | None:
-        """Fetch one record by probe, or None.
-
-        Matching follows exists(): a str is probed by id unless by names
-        other fields, Record and mapping probes use their model's unique
-        fields (empty values skipped). Probing a mapping with "id": ""
-        instead of a random UUID is the safe way to match on the other
-        fields only.
-        """
-        row = self._lookup(target, record_type=record_type, by=by, payload=True)
-        return from_json(row["payload"]) if row is not None else None
 
     def find(
         self,
-        record_type: str | type[Record] | None = None,
+        record_type: str | type[Record],
         *,
         where: Mapping[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
         sort: str = "-updated_at",
     ) -> list[Record]:
-        """All records of a type (or all types), newest first by default.
+        """All records of one type, newest first by default.
 
-        record_type accepts a type name ("text") or the class (Text). where
-        ANDs field filters: scalar fields compare by equality (a collection
-        becomes IN), array fields (identifiers, genres, ...) match by
-        membership, and link fields (author_ids) match through the link
-        table; an empty collection matches nothing. sort names any sortable
-        column — "id", "slug", "created_at", "updated_at" or any scalar
-        field — with a "-" prefix for descending order (default
-        "-updated_at"); every sort but id tie-breaks on id. With
-        record_type None, only stored models carrying every where key and
-        the sort column are searched. Unknown types, sorts and where
-        fields raise ValueError listing known values.
+        record_type accepts a type name ("text") or the class (Text).
+        where ANDs field filters: scalar fields compare by equality (a
+        collection becomes IN), array fields (identifiers, genres, ...)
+        match by membership, and link fields (author_ids) match through the
+        link table; an empty collection matches nothing. sort names any
+        sortable column — "id", "slug", "created_at", "updated_at" or any
+        scalar field — with a "-" prefix for descending order (default
+        "-updated_at"); every sort but id tie-breaks on id. Unknown types,
+        sorts and where fields raise ValueError listing known values.
         """
         cls = _resolve_type(record_type)
-        if cls is not None:
-            column, descending = sql.parse_sort(sort, _sortable(cls))
-            models = (cls,) if cls.table else ()
-        else:
-            every = dict.fromkeys(
-                ("id", "slug", *TIMESTAMP_COLUMNS)
-                + tuple(field for model in stored_models() for field in model.scalar_fields)
-            )
-            column, descending = sql.parse_sort(sort, tuple(every))
-            models = tuple(model for model in stored_models() if column in _sortable(model))
-        if not models:
+        if not cls.table:
             return []
+        column, descending = sql.parse_sort(sort, _sortable(cls))
         order_columns = ("id",) if column == "id" else (column, "id")
         direction = "DESC" if descending else "ASC"
+
         filters: dict[str, list[Any]] = {}
         if where:
             for key in where:
-                if cls is not None:
-                    if _field_kind(cls, key) is None:
-                        raise ValueError(f"not a queryable field on {type_name(cls)}: {key!r}")
-                elif not any(_field_kind(model, key) is not None for model in models):
-                    raise ValueError(f"no stored record type has a queryable field {key!r}")
+                if _field_kind(cls, key) is None:
+                    raise ValueError(f"not a queryable field on {type_name(cls)}: {key!r}")
             for key, value in where.items():
                 if value is None:
                     raise ValueError(f"not a filter value: {value!r}")
                 items = _items(value)
-                if not items:
+                if items is None:
                     return []
                 filters[key] = items
-            if cls is None:
-                models = tuple(
-                    model
-                    for model in models
-                    if all(_field_kind(model, key) is not None for key in filters)
-                )
-                if not models:
-                    return []
-        selects: list[str] = []
-        params: list[Any] = []
-        for model in models:
-            table = sql.quote(model.table)
-            clauses = [_condition(model, key, items) for key, items in filters.items()]
-            where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-            payload = _payload_sql(model)
-            selects.append(
-                f"SELECT {payload} AS payload, "
-                f"{', '.join(sql.quote(c) for c in order_columns)} FROM {table}{where_sql}"
-            )
-            params.extend(item for items in filters.values() for item in items)
-        union = " UNION ALL ".join(selects)
-        order_sql = ", ".join(f"{sql.quote(c)} {direction}" for c in order_columns)
-        sql_text = f"SELECT payload FROM ({union}) ORDER BY {order_sql}"
+
+        table = sql.quote(cls.table)
+        clauses = [_condition(cls, key, items) for key, items in filters.items()]
+        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params: list[Any] = [item for items in filters.values() for item in items]
+        sql_text = (
+            f"SELECT {_payload_sql(cls)} AS payload FROM {table}{where_sql} "
+            f"ORDER BY {', '.join(f'{sql.quote(c)} {direction}' for c in order_columns)}"
+        )
         if limit is not None or offset:
             sql_text += " LIMIT ? OFFSET ?"
             params.extend([limit if limit is not None else -1, offset])
         return [from_json(row["payload"]) for row in self.conn.execute(sql_text, params)]
+
+    def find_one(
+        self,
+        record_type: str | type[Record] | None = None,
+        *,
+        where: Mapping[str, Any],
+    ) -> Record | None:
+        """First record matching where on one model — or every stored model.
+
+        With record_type set, only that table is searched. Without it, every
+        stored model carrying all where keys is probed in registration
+        order; the first hit wins. This is the deduplication lookup:
+        find_one(where={"identifiers": "wikidata:Q42"}) answers "is this
+        item already imported, whatever its type".
+        """
+        if record_type is not None:
+            models = (_resolve_type(record_type),)
+            models = tuple(model for model in models if model.table)
+        else:
+            models = tuple(
+                model
+                for model in stored_models()
+                if all(_field_kind(model, key) is not None for key in where)
+            )
+        if not models and record_type is not None:
+            return None
+        if not models:
+            raise ValueError(f"no stored record type has a queryable field {next(iter(where))!r}")
+        for model in models:
+            records = self.find(model, where=where, limit=1)
+            if records:
+                return records[0]
+        return None
 
     def delete(self, record_id: str) -> bool:
         """Hard-delete, plus every link row referencing the id."""

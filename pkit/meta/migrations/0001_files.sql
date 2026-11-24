@@ -1,8 +1,10 @@
--- file.sql
+-- files: one content-addressed file per row. name is the tree name add
+-- first recorded for these bytes (first add wins).
 
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY NOT NULL CHECK (id LIKE 'sha256:%'),
     slug TEXT NOT NULL CHECK (slug <> '') UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL DEFAULT 0 CHECK (size >= 0),
     sha256 TEXT NOT NULL DEFAULT '',
     sha1 TEXT NOT NULL DEFAULT '',

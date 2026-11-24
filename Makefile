@@ -68,7 +68,7 @@ format-check: ## Check formatting without changing files.
 	$(BIN)/ruff format --check .
 
 .PHONY: typecheck
-typecheck:
+typecheck: ## Run ty type checks.
 	$(BIN)/ty check
 
 .PHONY: check
@@ -100,7 +100,7 @@ release: ## Bump VERSION, run full check, commit, and tag. Usage: make release V
 	@echo "Tagged v$(VERSION). Push with: git push origin main v$(VERSION)"
 
 .PHONY: setup-remotes
-setup-remotes:
+setup-remotes: ## Configure origin for GitHub (fetch) and Codefloe (push).
 	@git config --remove-section remote.origin
 	@git remote add origin git@github.com:esperoj/pkit.git
 	@git remote set-url --push origin git@github.com:esperoj/pkit.git
@@ -109,7 +109,7 @@ setup-remotes:
 	@git remote -v
 
 .PHONY: setup
-setup: setup-remotes install
+setup: setup-remotes install ## Configure remotes and install the global CLI.
 
 .PHONY: clean
 clean: ## Remove caches and build artifacts.

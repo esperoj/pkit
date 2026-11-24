@@ -9,18 +9,24 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "LANG_QIDS",
     "PRIMARY_LANGS",
     "EntityView",
     "claim",
     "claims",
     "description",
+    "entity_lang_code",
     "ext_ids",
+    "extract_item_ids",
     "has_claim",
     "has_class",
     "i18n_extra",
     "item_ids",
     "kind_of",
+    "monolingual_map",
+    "normalize_lang",
     "person_name",
+    "text_map",
     "work_title",
 ]
 
@@ -44,7 +50,7 @@ _LANG_TAGS: dict[str, tuple[str, ...]] = {
     "vi": ("vi",),
 }
 _ZH_ALIASES = frozenset({*_LANG_TAGS["zh"], "cmn", "wuu"})
-_LANG_QIDS: dict[str, str] = {
+LANG_QIDS: dict[str, str] = {
     "Q1860": "en",  # English
     "Q9199": "vi",  # Vietnamese
     "Q7850": "zh",  # Chinese
@@ -75,7 +81,7 @@ _LANG_QIDS: dict[str, str] = {
 }
 
 
-def _normalize_lang(code: str) -> str:
+def normalize_lang(code: str) -> str:
     tag = code.strip().lower().replace("_", "-")
     if not tag:
         return ""
@@ -110,7 +116,7 @@ def _lang_matches(raw_code: str, wanted: str) -> bool:
     return code == target or code.startswith(f"{target}-")
 
 
-def _text_map(mapping: Any) -> dict[str, str]:
+def text_map(mapping: Any) -> dict[str, str]:
     if not isinstance(mapping, dict):
         return {}
     out: dict[str, str] = {}
@@ -231,7 +237,7 @@ def _qid(statement: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_item_ids(entity: dict[str, Any], prop: str) -> list[str]:
+def extract_item_ids(entity: dict[str, Any], prop: str) -> list[str]:
     out: list[str] = []
     for stmt in _statements(entity, prop):
         qid = _qid(stmt)
@@ -240,7 +246,7 @@ def _extract_item_ids(entity: dict[str, Any], prop: str) -> list[str]:
     return out
 
 
-def _monolingual_map(entity: dict[str, Any], prop: str) -> dict[str, str]:
+def monolingual_map(entity: dict[str, Any], prop: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for stmt in _statements(entity, prop):
         parsed = _datavalue(stmt)
@@ -255,7 +261,7 @@ def _monolingual_map(entity: dict[str, Any], prop: str) -> dict[str, str]:
     return out
 
 
-def _entity_lang_code(entity: dict[str, Any]) -> str:
+def entity_lang_code(entity: dict[str, Any]) -> str:
     for prop in ("P424", "P305", "P218"):
         for stmt in _statements(entity, prop):
             parsed = _datavalue(stmt)
@@ -263,7 +269,7 @@ def _entity_lang_code(entity: dict[str, Any]) -> str:
                 continue
             dtype, value = parsed
             if dtype == "string" and value:
-                normalized = _normalize_lang(str(value))
+                normalized = normalize_lang(str(value))
                 if normalized:
                     return normalized
     return ""
@@ -297,7 +303,7 @@ def _decode_value(
 def description() -> Callable[[EntityView], str]:
     """Extract an entity's description in the view language."""
     return lambda view: _pick_from_layers(
-        (_text_map(view.raw.get("descriptions")),),
+        (text_map(view.raw.get("descriptions")),),
         lang=view.lang,
         orig_lang=view.orig_lang,
     )
@@ -308,7 +314,7 @@ def work_title() -> Callable[[EntityView], str]:
 
     def _extract(view: EntityView) -> str:
         return _pick_from_layers(
-            (_monolingual_map(view.raw, "P1476"), _text_map(view.raw.get("labels"))),
+            (monolingual_map(view.raw, "P1476"), text_map(view.raw.get("labels"))),
             lang=view.lang,
             orig_lang=view.orig_lang,
         )
@@ -321,7 +327,7 @@ def person_name() -> Callable[[EntityView], str]:
 
     def _extract(view: EntityView) -> str:
         return _pick_from_layers(
-            (_text_map(view.raw.get("labels")), _monolingual_map(view.raw, "P1559")),
+            (text_map(view.raw.get("labels")), monolingual_map(view.raw, "P1559")),
             lang=view.lang,
             orig_lang=view.orig_lang,
         )
@@ -341,15 +347,15 @@ def i18n_extra(*, person: bool = False) -> Callable[[EntityView], dict[str, Any]
     text_key = "name" if person else "title"
 
     def _extract(view: EntityView) -> dict[str, Any]:
-        labels = _text_map(view.raw.get("labels"))
-        descriptions = _text_map(view.raw.get("descriptions"))
+        labels = text_map(view.raw.get("labels"))
+        descriptions = text_map(view.raw.get("descriptions"))
         if person:
             text_layers: tuple[Mapping[str, str], ...] = (
                 labels,
-                _monolingual_map(view.raw, "P1559"),
+                monolingual_map(view.raw, "P1559"),
             )
         else:
-            text_layers = (_monolingual_map(view.raw, "P1476"), labels)
+            text_layers = (monolingual_map(view.raw, "P1476"), labels)
         i18n: dict[str, dict[str, str]] = {}
         for code in _tracked_langs(view.orig_lang):
             entry: dict[str, str] = {}
@@ -404,7 +410,7 @@ def claim(prop: str, *, lang: str | None = None) -> Callable[[EntityView], str]:
 
 def item_ids(prop: str) -> Callable[[EntityView], list[str]]:
     """Extract referenced Wikidata QIDs for a property (for links or P31 checks)."""
-    return lambda view: _extract_item_ids(view.raw, prop)
+    return lambda view: extract_item_ids(view.raw, prop)
 
 
 def ext_ids(**prop_prefixes: str) -> Callable[[EntityView], list[str]]:

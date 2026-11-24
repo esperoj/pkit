@@ -32,7 +32,7 @@ def test_load_imports_wikidata_person_with_uuid_and_identifier(wikidata, db_path
     assert count == 1
     with MetaDB(db_path) as meta:
         assert meta.get("wikidata:Q42") is None
-        record = meta.get("wikidata:Q42", by="identifiers")
+        record = meta.find_one(where={"identifiers": "wikidata:Q42"})
     assert record is not None
     assert isinstance(record, Person)
     assert uuid.UUID(record.id).version == 4
@@ -55,7 +55,7 @@ def test_load_skips_existing_unless_refresh(wikidata, db_path):
     assert load.load("https://www.wikidata.org/wiki/Q42", db_path=db_path) == 1
     assert len(wikidata.requests) == 1
     with MetaDB(db_path) as meta:
-        first = meta.get("wikidata:Q42", by="identifiers")
+        first = meta.find_one(where={"identifiers": "wikidata:Q42"})
         assert first is not None
 
     # Second load skips network and preserves the existing record.
@@ -283,7 +283,7 @@ def test_load_skips_redirect_to_existing_record(wikidata, db_path):
     assert load.load("wikidata:Q42", db_path=db_path) == 1
     assert load.load("wikidata:Q99", db_path=db_path) == 0
     with MetaDB(db_path) as meta:
-        person = meta.get("wikidata:Q42", by="identifiers")
+        person = meta.find_one(where={"identifiers": "wikidata:Q42"})
     assert isinstance(person, Person)
     assert person.name == "Douglas Adams"
 

@@ -1,4 +1,4 @@
--- sound.sql
+-- sounds: songs, albums, singles, podcasts.
 
 CREATE TABLE IF NOT EXISTS sounds (
     id TEXT PRIMARY KEY NOT NULL CHECK (id <> ''),

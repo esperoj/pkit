@@ -32,7 +32,7 @@ from pkit.archive.cas import (
 from pkit.archive.db import ArchiveDB, hashes_of
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
-from pkit.archive.remote import WAYBACK, RemoteFile, Status, selects
+from pkit.archive.remote import WAYBACK, Status, selects
 from pkit.archive.wayback import WaybackBackend
 from pkit.lib import config
 from pkit.meta.models import File
@@ -48,7 +48,6 @@ __all__ = [
     "GetResult",
     "InputError",
     "MatchResult",
-    "RemoteFile",
     "TransientError",
     "VerifyResult",
     "add",

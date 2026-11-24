@@ -1,3 +1,5 @@
+"""lib.cli: exit codes, stdin line, emit, and the one main-loop."""
+
 import argparse
 import json
 import sys
@@ -9,9 +11,9 @@ from pkit.lib.cli import (
     EXIT_ERROR,
     EXIT_OK,
     EXIT_USAGE,
-    emit_result,
+    emit,
     fail,
-    read_stdin_payload,
+    read_stdin_line,
     run_tool,
 )
 
@@ -30,99 +32,54 @@ def _parser_with_command(handler) -> argparse.ArgumentParser:
     return parser
 
 
-def test_read_stdin_payload_tty(fake_stdin):
+def test_read_stdin_line_tty(fake_stdin):
     fake_stdin("ignored", is_tty=True)
 
-    assert read_stdin_payload(False) == (None, {})
+    assert read_stdin_line() is None
 
 
-def test_read_stdin_payload_plain_first_line(fake_stdin):
-    fake_stdin("http://one\nhttp://two\n")
+def test_read_stdin_line_first_non_empty(fake_stdin):
+    fake_stdin("\n   \nhttp://one\nhttp://two\n")
 
-    assert read_stdin_payload(False) == ("http://one", {})
+    assert read_stdin_line() == "http://one"
 
 
-def test_read_stdin_payload_plain_blank(fake_stdin):
+def test_read_stdin_line_blank(fake_stdin):
     fake_stdin("   \n")
 
-    assert read_stdin_payload(False) == (None, {})
+    assert read_stdin_line() is None
 
 
-def test_read_stdin_payload_json_object(fake_stdin):
-    fake_stdin('{"url": 7, "capture_all": true}')
-
-    url, payload = read_stdin_payload(True)
-
-    assert url == "7"
-    assert payload == {"url": 7, "capture_all": True}
-
-
-def test_read_stdin_payload_json_object_missing_primary(fake_stdin):
-    fake_stdin('{"foo": 1}')
-
-    url, payload = read_stdin_payload(True)
-
-    assert url is None
-    assert payload == {"foo": 1}
-
-
-def test_read_stdin_payload_json_scalar(fake_stdin):
-    fake_stdin('"http://example.com"')
-
-    assert read_stdin_payload(True) == ("http://example.com", {})
-
-
-def test_read_stdin_payload_json_invalid(fake_stdin):
-    fake_stdin("http://raw")
-
-    assert read_stdin_payload(True) == ("http://raw", {})
-
-
-@pytest.mark.parametrize("raw", ["null", "true", "[1, 2]"])
-def test_read_stdin_payload_json_unusable_scalars(fake_stdin, raw):
-    fake_stdin(raw)
-
-    assert read_stdin_payload(True) == (None, {})
-
-
-def test_emit_result_json_dataclass(capsys):
-    emit_result(
-        Dummy(True, "done"),
-        json_output=True,
-        plain=lambda result: None,
-    )
+def test_emit_json_dataclass(capsys):
+    emit(Dummy(True, "done"), "ignored", json_output=True)
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"ok": True, "message": "done"}
 
 
-def test_emit_result_json_non_dataclass(capsys):
-    emit_result(
-        {"a": 1},
-        json_output=True,
-        plain=lambda result: None,
-    )
+def test_emit_json_non_dataclass(capsys):
+    emit({"a": 1}, "ignored", json_output=True)
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"a": 1}
 
 
-def test_emit_result_plain(capsys):
-    emit_result(
-        Dummy(True, "done"),
-        json_output=False,
-        plain=lambda result: result.message,
-    )
+def test_emit_json_sequence_of_dataclasses(capsys):
+    emit([Dummy(True, "a"), Dummy(False, "b")], "ignored", json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{"ok": True, "message": "a"}, {"ok": False, "message": "b"}]
+
+
+def test_emit_plain(capsys):
+    emit(Dummy(True, "done"), "done", json_output=False)
 
     assert capsys.readouterr().out == "done\n"
 
 
-def test_emit_result_plain_none(capsys):
-    emit_result(
-        Dummy(True, "done"),
-        json_output=False,
-        plain=lambda result: None,
-    )
+def test_emit_plain_no_text_prints_nothing(capsys):
+    emit(Dummy(True, "done"), None, json_output=False)
+    emit(Dummy(True, "done"), "", json_output=False)
 
     assert capsys.readouterr().out == ""
 

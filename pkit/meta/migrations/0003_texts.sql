@@ -1,6 +1,6 @@
--- video.sql
+-- texts: written works.
 
-CREATE TABLE IF NOT EXISTS videos (
+CREATE TABLE IF NOT EXISTS texts (
     id TEXT PRIMARY KEY NOT NULL CHECK (id <> ''),
     slug TEXT NOT NULL CHECK (slug <> '') UNIQUE,
 
@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS videos (
     publication_date TEXT NOT NULL DEFAULT '',
     lang TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
-    duration INTEGER NOT NULL DEFAULT 0 CHECK (duration >= 0),
 
     identifiers TEXT NOT NULL DEFAULT '[]'
         CHECK (json_valid(identifiers) AND json_type(identifiers) = 'array'),
@@ -19,9 +18,6 @@ CREATE TABLE IF NOT EXISTS videos (
 
     series TEXT NOT NULL DEFAULT '[]'
         CHECK (json_valid(series) AND json_type(series) = 'array'),
-
-    directors TEXT NOT NULL DEFAULT '[]'
-        CHECK (json_valid(directors) AND json_type(directors) = 'array'),
 
     publishers TEXT NOT NULL DEFAULT '[]'
         CHECK (json_valid(publishers) AND json_type(publishers) = 'array'),
@@ -33,24 +29,24 @@ CREATE TABLE IF NOT EXISTS videos (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS videos_updated
-ON videos(updated_at);
+CREATE INDEX IF NOT EXISTS texts_updated
+ON texts(updated_at);
 
-CREATE INDEX IF NOT EXISTS videos_created
-ON videos(created_at);
+CREATE INDEX IF NOT EXISTS texts_created
+ON texts(created_at);
 
-CREATE TRIGGER IF NOT EXISTS videos_touch_updated
-AFTER UPDATE ON videos
+CREATE TRIGGER IF NOT EXISTS texts_touch_updated
+AFTER UPDATE ON texts
 WHEN old.updated_at IS new.updated_at
 BEGIN
-    UPDATE videos
+    UPDATE texts
     SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = new.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS videos_keep_id
-BEFORE UPDATE ON videos
+CREATE TRIGGER IF NOT EXISTS texts_keep_id
+BEFORE UPDATE ON texts
 WHEN old.id IS NOT new.id
 BEGIN
-    SELECT RAISE(ABORT, 'videos.id is immutable');
+    SELECT RAISE(ABORT, 'texts.id is immutable');
 END;

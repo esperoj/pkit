@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# batch-verify — resumable parallel verification of CAS-linked content.
+#
+# Collects the unique sha256 ids behind a tree's pkit archive symlinks and
+# runs `pkit archive verify` on one representative link per id, through
+# batch-run: failed checks retry on the next run, passed checks never
+# repeat, and every job lands in a persistent joblog.
+#
+# Usage:
+#   batch-verify [OPTIONS] LOG [TREE...]
+#
+# Options:
+#   --shard N[/M]  verify only every M-th id, 1-based; a bare N means N/31,
+#                  so a daily sweep of a monthly cycle is --shard "$(date +%-d)"
+#   --jobs N       concurrent jobs (default: 4)
+#   --delay SECS   seconds between job starts, for rate-limited remotes
+#   --fresh        discard the joblog and start the batch over
+#   -- COMMAND     verification override; {} is one CAS link path
+#                  (default: pkit archive verify {})
+#   -h, --help     this help
+#
+# Examples:
+#   # verify everything under the repo, resumable
+#   batch-verify logs/verify-2026-10.tsv ~/manga
+#
+#   # one daily shard of a 31-day cycle, gentle with the Wayback rate limit
+#   batch-verify --shard "$(date +%-d)" --delay 5 logs/verify-$(date +%Y-%m).tsv .
+#
+#   # the same command retries failed checks and skips passed ones; once a
+#   # run reports "0 failed", archive the log
+#   batch-verify logs/verify-2026-10.tsv ~/manga
+#   mkdir -p logs/done && mv logs/verify-2026-10.tsv logs/done/
+#
+# TREE defaults to '.'. A tree with no CAS links is an error: a sweep
+# wants to hear about that. Exit status: 0 when every check of this run
+# passed, 1 when any failed, 2 for usage errors or missing tools.
+set -euo pipefail
+
+die() {
+        echo "batch-verify: $*" >&2
+        exit 2
+}
+
+usage() {
+        sed -e '1d' -e '/^[^#]/,$d' "$0" | sed 's/^# \{0,1\}//'
+}
+
+self_dir=$(dirname -- "$(readlink -f -- "$0")")
+log="" shard="" shard_given=0 jobs=4 delay=0 fresh=0
+trees=()
+command=()
+while [ $# -gt 0 ]; do
+        case $1 in
+        --shard)
+                [ $# -ge 2 ] || die "--shard needs a value"
+                shard=$2
+                shard_given=1
+                shift 2
+                ;;
+        --jobs | --delay)
+                [ $# -ge 2 ] || die "$1 needs a value"
+                if [ "$1" = "--jobs" ]; then jobs=$2; else delay=$2; fi
+                shift 2
+                ;;
+        --fresh)
+                fresh=1
+                shift
+                ;;
+        -h | --help)
+                usage
+                exit 0
+                ;;
+        --)
+                shift
+                command=("$@")
+                break
+                ;;
+        --*)
+                die "unknown option: $1"
+                ;;
+        *)
+                if [ -z "$log" ]; then
+                        log=$1
+                else
+                        trees+=("$1")
+                fi
+                shift
+                ;;
+        esac
+done
+
+[ -n "$log" ] || die "usage: batch-verify [OPTIONS] LOG [TREE...]"
+[ "${#trees[@]}" -ge 1 ] || trees=(".")
+[ -x "$self_dir/batch-run" ] || die "batch-run not found next to this script"
+
+if [ "$shard_given" -eq 1 ]; then
+        case $shard in
+        */*)
+                shard_n=${shard%%/*}
+                shard_m=${shard##*/}
+                ;;
+        *)
+                shard_n=$shard
+                shard_m=31
+                ;;
+        esac
+        case $shard_n in '' | *[!0-9]* | 0) die "invalid shard: $shard" ;; esac
+        case $shard_m in '' | *[!0-9]* | 0) die "invalid shard: $shard" ;; esac
+        [ "$shard_n" -le "$shard_m" ] || die "invalid shard: $shard"
+fi
+
+for tree in "${trees[@]}"; do
+        [ -d "$tree" ] || die "no such directory: $tree"
+done
+command -v find >/dev/null 2>&1 || die "missing required tool: find"
+[ "${#command[@]}" -ge 1 ] || command -v pkit >/dev/null 2>&1 ||
+        die "missing required tool: pkit (on PATH, or pass -- COMMAND)"
+[ "${#command[@]}" -ge 1 ] || command=(pkit archive verify "{}")
+items=$(mktemp)
+trap 'rm -f -- "$items"' EXIT
+
+# One job per unique content hash: the first CAS link seen for each sha256,
+# NUL-safe end to end. Ids are sorted so --shard picks a stable subset.
+{
+        for tree in "${trees[@]}"; do
+                find "$tree" -type l -not -path "*/.git/*" -printf '%l\t%p\0'
+        done
+} | while IFS= read -r -d '' record; do
+        target=${record%%$'\t'*}
+        path=${record#*$'\t'}
+        hash=${target##*/}
+        [[ $hash =~ ^[0-9a-f]{64}$ ]] || continue
+        printf '%s\t%s\0' "$hash" "$path"
+done | sort -z -t$'\t' -k1,1 -u | {
+        n=0
+        while IFS= read -r -d '' record; do
+                n=$((n + 1))
+                if [ "$shard_given" -eq 1 ] && [ $((n % shard_m)) -ne $(((shard_n - 1) % shard_m)) ]; then
+                        continue
+                fi
+                printf '%s\0' "${record#*$'\t'}"
+        done
+} >"$items"
+
+[ -s "$items" ] || die "no CAS-linked files to verify in: ${trees[*]}"
+
+extra=()
+[ "$fresh" -eq 1 ] && extra+=(--fresh)
+
+exec "$self_dir/batch-run" \
+        --log "$log" --jobs "$jobs" --delay "$delay" \
+        ${extra[@]+"${extra[@]}"} \
+        -- "${command[@]}" <"$items"

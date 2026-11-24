@@ -7,8 +7,7 @@ to child items) without per-type import boilerplate.
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from types import TracebackType
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 
 from pkit.meta.models import Record
 
@@ -67,19 +66,15 @@ def select_plan(
 
 
 class Source(Protocol):
-    """Remote metadata source consumed by pkit.meta.load."""
+    """Remote metadata source consumed by pkit.meta.load.
+
+    Construction must be side-effect free (match() runs on a bare
+    instance); fetch() opens whatever resources it needs and close()
+    releases them.
+    """
 
     name: str
     plans: Sequence[Plan]
-
-    def __enter__(self) -> Self: ...
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None: ...
 
     def match(self, url: str) -> str | None:
         """Return the source-native key for url, or None if not handled."""
@@ -94,3 +89,5 @@ class Source(Protocol):
     ) -> Any:
         """Fetch one item by key, or return None if missing."""
         ...
+
+    def close(self) -> None: ...

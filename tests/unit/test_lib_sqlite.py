@@ -50,37 +50,25 @@ def test_database_applies_migrations_once(tmp_path, migrations):
         assert not db.readonly
         assert "things" in _tables(db.conn)
         assert "entries" in _tables(db.conn)
-        # auto_migrate only checks; the explicit call reports nothing new
-        assert db.migrate() == []
+        # connecting again applies nothing new
+        assert sqlite.migrate(db.conn, migrations) == []
 
-    with sqlite.Database(db_file, migrations_dir=migrations, auto_migrate=False) as db:
-        assert db.migrate() == []
+    with sqlite.Database(db_file, migrations_dir=migrations) as db:
+        assert sqlite.migrate(db.conn, migrations) == []
 
 
 def test_migrate_returns_applied_names(tmp_path, migrations):
-    db = sqlite.Database(tmp_path / "db.sqlite", migrations_dir=migrations, auto_migrate=False)
+    conn = sqlite.connect(tmp_path / "db.sqlite")
     try:
-        assert db.migrate() == ["0001_first.sql", "0002_second.sql"]
+        assert sqlite.migrate(conn, migrations) == ["0001_first.sql", "0002_second.sql"]
     finally:
-        db.close()
-
-
-def test_migrate_accepts_an_explicit_directory(tmp_path, migrations):
-    with sqlite.Database(tmp_path / "db.sqlite", auto_migrate=False) as db:
-        assert db.migrate(migrations) == ["0001_first.sql", "0002_second.sql"]
-
-
-def test_auto_migrate_false_leaves_schema_empty(tmp_path, migrations):
-    with sqlite.Database(
-        tmp_path / "db.sqlite", migrations_dir=migrations, auto_migrate=False
-    ) as db:
-        assert _tables(db.conn) == set()
+        conn.close()
 
 
 def test_database_without_migrations_dir(tmp_path):
     with sqlite.Database(tmp_path / "bare.db") as db:
         assert _tables(db.conn) == set()
-        assert db.migrate() == []
+        assert sqlite.migrate(db.conn, None) == []
 
 
 @pytest.mark.parametrize("kind", ["missing-dir", "empty-dir"], ids=["missing", "empty"])

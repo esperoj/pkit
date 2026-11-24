@@ -1,4 +1,4 @@
-"""Shared CLI plumbing: exit codes, stdin, output, one main-loop.
+"""Shared CLI plumbing: exit codes, output, one main-loop.
 
 This module is intentionally generic. Tool-specific option coercion belongs
 in the tool's own cli module. Only stdlib argparse is used here.
@@ -7,7 +7,7 @@ in the tool's own cli module. Only stdlib argparse is used here.
 import argparse
 import json
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
@@ -16,9 +16,9 @@ __all__ = [
     "EXIT_OK",
     "EXIT_TEMPFAIL",
     "EXIT_USAGE",
-    "emit_result",
+    "emit",
     "fail",
-    "read_stdin_payload",
+    "read_stdin_line",
     "run_tool",
 ]
 
@@ -28,55 +28,19 @@ EXIT_USAGE = 2
 EXIT_TEMPFAIL = 75
 
 
-def read_stdin_payload(
-    json_mode: bool,
-    primary_key: str = "url",
-) -> tuple[str | None, dict[str, Any]]:
-    """Read stdin in a Unix-friendly way.
+def read_stdin_line() -> str | None:
+    """The first non-empty stdin line, or None on a TTY or empty stdin.
 
-    Plain mode:
-        Reads one line of text. Useful for:
-
-            echo https://example.com | tool save
-
-    JSON mode:
-        Attempts to parse stdin as JSON.
-
-        If stdin is a JSON object, returns:
-
-            (payload.get(primary_key), payload)
-
-        If stdin is a JSON scalar (str/number), returns:
-
-            (str(payload), {})
-
-        If stdin is invalid JSON, treats the first line as plain text.
+    Unix-friendly: `echo https://example.com | tool save` works without
+    flags, and an interactive shell never blocks.
     """
     if sys.stdin.isatty():
-        return None, {}
-
-    raw = sys.stdin.read().strip()
-    if not raw:
-        return None, {}
-
-    if not json_mode:
-        first_line = raw.splitlines()[0].strip()
-        return first_line or None, {}
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        first_line = raw.splitlines()[0].strip()
-        return first_line or None, {}
-
-    if isinstance(payload, dict):
-        primary = payload.get(primary_key)
-        return (str(primary) if primary is not None else None), payload
-
-    if payload is None or isinstance(payload, (bool, list)):
-        return None, {}
-
-    return str(payload), {}
+        return None
+    for line in sys.stdin.read().splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return None
 
 
 def _jsonable(result: Any) -> Any:
@@ -88,25 +52,17 @@ def _jsonable(result: Any) -> Any:
     return result
 
 
-def emit_result(
-    result: Any,
-    *,
-    json_output: bool,
-    plain: Callable[[Any], str | None],
-) -> None:
+def emit(result: Any, text: str | None, *, json_output: bool) -> None:
     """Emit a result in either JSON or plain Unix output.
 
-    For plain output, the `plain` callback should return the single string
-    that should be printed to stdout. For JSON, a dataclass, a sequence of
-    dataclasses, or ready-made JSON data all work.
+    JSON prints the dataclass (or sequence of dataclasses); plain prints
+    the caller-formatted text, or nothing when there is none (an empty
+    verify report stays silent). stdout is data only.
     """
     if json_output:
         print(json.dumps(_jsonable(result), indent=2))
-        return
-
-    value = plain(result)
-    if value is not None:
-        print(value)
+    elif text:
+        print(text)
 
 
 def fail(

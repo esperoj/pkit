@@ -1,20 +1,118 @@
 #+title: pkit workflow scripts
 
 Project-level helpers, kept out of the ~pkit~ Python package on purpose:
-they glue ~git~ and ~pkit~ commands together in the shell and are not part
-of any SDK contract. Make them executable once after cloning:
+they glue ~git~, ~parallel~ and ~pkit~ commands together in the shell and
+are not part of any SDK contract. Make them executable once after cloning:
 
 #+begin_src sh
-chmod +x scripts/meta-diff-fzf scripts/archive-pack scripts/archive-verify-sweep
+chmod +x scripts/*
 #+end_src
 
 * Scripts
 
-| Script                    | Purpose                                                        |
-|---------------------------+----------------------------------------------------------------|
-| ~meta-diff-fzf~           | Browse record repo changes (working tree vs HEAD) in ~fzf~     |
-| ~archive-pack~            | Deterministic ~tar.zst~ packing, optional ~age~ + ~split~      |
-| ~archive-verify-sweep~    | Sharded, parallel ~pkit archive verify~ over CAS-linked files  |
+| Script            | Purpose                                                       |
+|-------------------+---------------------------------------------------------------|
+| ~batch-run~       | Run one command per stdin item through GNU parallel, resumable |
+| ~batch-copy~      | Resumable batch copy/upload of a set of files                  |
+| ~batch-verify~    | Resumable, sharded ~pkit archive verify~ over a tree           |
+| ~meta-diff-fzf~   | Browse record repo changes (working tree vs HEAD) in ~fzf~     |
+| ~archive-pack~    | Deterministic ~tar.zst~ packing, optional ~age~ + ~split~      |
+
+** batch-run — the batch engine
+
+#+begin_src sh
+producer | batch-run [OPTIONS] -- COMMAND...
+#+end_src
+
+Runs COMMAND once per stdin item through GNU ~parallel~, recording every
+job in a persistent joblog. Items are NUL-separated when the stream
+carries NUL bytes (~find -print0~) or one per line. The command may use
+parallel's replacement strings: ~{}~ (item), ~{/}~ (basename), ~{//~~
+(dirname), ~{.}~, ~{/.}~.
+
+Options: ~--log FILE~ (required), ~--jobs N~ (default 4), ~--delay SECS~,
+~--fresh~ (discard the joblog, start over), ~-h~.
+
+#+begin_src sh
+find manga/ -name '*.cbz' -print0 |
+  batch-run --log logs/fix-2026-10.tsv -- 'pkit archive fix {//}'
+#+end_src
+
+Output is tagged per job and printed live; a summary goes to stderr.
+Exit status: 0 when every job of this run succeeded, 1 when any failed,
+2 for usage errors.
+
+** batch-copy — copy or upload a set of files
+
+#+begin_src sh
+batch-copy [OPTIONS] LOG SRC... -- COMMAND...
+#+end_src
+
+SRC files and directories expand to one job per file (~.git~ skipped);
+COMMAND is the copy
+adapter (~{}~ is the file path). An interrupted batch resumes, failed
+files retry on the next run, succeeded files never run again.
+
+#+begin_src sh
+# a month of captures to an rclone remote (ia:, s3:, gdrive:, ...)
+batch-copy logs/copy-2026-10.tsv 2026-10/ -- rclone copyto {} ia:me/2026-10/{/}
+
+# each file into the Wayback Machine (pkit stages and captures per file)
+batch-copy logs/wayback-2026-10.tsv books/ -- pkit archive copy {} wayback:
+#+end_src
+
+For anything unusual, feed ~batch-run~ directly (any producer, any
+command).
+
+** batch-verify — verify CAS-linked content
+
+#+begin_src sh
+batch-verify [OPTIONS] LOG [TREE...]
+#+end_src
+
+Collects the unique ~sha256~ ids behind a tree's CAS symlinks and runs
+~pkit archive verify~ on one representative link per id — each content
+hash is verified exactly once, no matter how many links point at it.
+~--shard N[/M]~ verifies only every M-th id (bare N means N/31, a daily
+sweep); ~-- CMD~ overrides the verification command.
+
+#+begin_src sh
+# verify everything under the repo, resumable
+batch-verify logs/verify-2026-10.tsv ~/manga
+
+# one daily shard of a monthly cycle, gentle with the Wayback rate limit
+batch-verify --shard "$(date +%-d)" --delay 5 logs/verify-$(date +%Y-%m).tsv .
+#+end_src
+
+A tree with no CAS links is an error: a sweep wants to hear about that.
+
+** Job-log lifecycle
+
+One joblog per batch or time period, at an explicit path — that is the
+whole system:
+
+- *Resume*: re-running the same command with the same ~--log~ skips items
+  that succeeded and retries the failed ones (parallel's
+  ~--resume-failed~). An interrupted batch (Ctrl-C, crash, reboot)
+  resumes the same way: completed jobs are already in the log and are
+  skipped.
+- *Retry*: nothing extra to do — failures are simply re-run on the next
+  invocation. The summary names every failed job.
+- *Archive or clean up*: only after a run reports ~0 failed~:
+
+#+begin_src sh
+mkdir -p logs/done
+mv logs/copy-2026-10.tsv logs/done/     # the batch is finished; start November fresh
+#+end_src
+
+Deleting a log with unfinished work re-runs those items — never destroys
+data, only time.
+
+- *Watch progress*: job output streams by live; ~tail -f LOG~ shows the
+  raw joblog (tab-separated: seq, host, start, runtime, exitval, ...).
+
+The log keys on the items, not the command: give a batch that runs a
+different command its own log, or pass ~--fresh~.
 
 ** meta-diff-fzf
 
@@ -46,40 +144,19 @@ same bytes always produce the same archive (clean CAS identity). With
 split into ~FILE.part-aa~, ~FILE.part-ab~, ... chunks. Chunks and whole
 archives are ordinary files, ready for ~pkit archive add~.
 
-** archive-verify-sweep
-
-#+begin_src sh
-scripts/archive-verify-sweep [--jobs N] [--delay SECS] [--shard N/M] [TREE]
-#+end_src
-
-Collects the unique ~sha256~ ids behind a tree's CAS symlinks and runs
-~pkit archive verify sha256:<id>~ on each through GNU ~parallel~ (~--tag~
-output), exiting non-zero when any check is not ~ok~. ~--delay~ spaces out
-job starts for rate-limited remotes such as ~wayback:~. ~--shard N/M~
-verifies only every M-th id (1-based); a bare ~--shard N~ means ~N/31~, so
-a daily sweep is:
-
-#+begin_src sh
-scripts/archive-verify-sweep --shard "$(date +%-d)" --delay 5
-#+end_src
-
-Exits 2 for missing tools or bad arguments, 1 when no CAS-linked files
-exist in the tree or any check fails.
-
 * External tools
 
 | Tool            | Used by                     | Required                |
 |-----------------+-----------------------------+-------------------------|
+| ~parallel~      | ~batch-run/copy/verify~     | always (with perl)      |
+| ~find~, ~sort~  | ~batch-verify~, ~batch-copy~ | always (GNU)           |
 | ~git~           | ~meta-diff-fzf~             | always                  |
 | ~python3~       | ~meta-diff-fzf~             | always (stdlib only)    |
-| ~jq~            | —                           | not needed (python3)    |
 | ~fzf~           | ~meta-diff-fzf~             | always                  |
 | ~tar~, ~zstd~   | ~archive-pack~              | always                  |
 | ~age~           | ~archive-pack~              | only with ~-r~ / ~-R~   |
 | ~split~         | ~archive-pack~              | only with ~-s~          |
-| ~find~, ~sed~, ~awk~, ~sort~, ~grep~ | ~archive-verify-sweep~ | always (GNU) |
-| ~parallel~      | ~archive-verify-sweep~      | always                  |
-| ~pkit~          | ~archive-verify-sweep~      | on ~PATH~ (~make install~) |
+| ~pkit~          | ~batch-verify~              | on ~PATH~ (~make install~) |
 
-GNU ~tar~ / ~find~ / ~coreutils~ are assumed (Termux and Linux ship them;
-on macOS install ~coreutils~ / ~gnu-tar~).
+GNU ~tar~ / ~find~ / ~coreutils~ / ~parallel~ are assumed (Termux and
+Linux ship them; on macOS install ~coreutils~ / ~gnu-tar~ / ~parallel~).

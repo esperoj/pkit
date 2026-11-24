@@ -40,9 +40,15 @@ class ArchiveDB(MetaDB):
         name is the tree name the content first arrived under; an already
         recorded name wins, so re-adds and re-registration stay no-ops.
         """
-        probe = File(id=hashes.record_id, sha256=hashes.sha256, sha1=hashes.sha1, md5=hashes.md5)
-        # A File probe only reads the files table, so the hit is always a File.
-        stored = cast(File, self.get(probe))
+        # The canonical row is keyed by sha256; a row recorded under another
+        # hash (repo data carrying only sha1/md5) is still the same content.
+        stored = cast(File, self.get(hashes.record_id))
+        if stored is None:
+            for field in ("sha256", "sha1", "md5"):
+                if value := getattr(hashes, field):
+                    stored = cast(File, self.find_one(File, where={field: value}))
+                    if stored is not None:
+                        break
         if stored is None:
             created = File(
                 id=hashes.record_id,

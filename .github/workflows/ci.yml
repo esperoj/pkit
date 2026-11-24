@@ -37,6 +37,9 @@ jobs:
             pyproject.toml
             requirements*.txt
 
+      - name: Install GNU parallel
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends parallel
+
       - name: Install dev environment
         run: make dev
 

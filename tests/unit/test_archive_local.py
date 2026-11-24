@@ -51,6 +51,35 @@ def test_add_records_the_first_name_only(repo, db_path):
     assert record.name == "v1.cbz"  # first add wins: records stay stable
 
 
+def test_file_record_matches_a_row_recorded_under_sha1_only(repo, db_path):
+    """Repo data carrying only sha1 is still the same content."""
+    hashes = hash_file(repo / "manga" / "v1.cbz")
+    with MetaDB(db_path) as meta:
+        meta.put(
+            File(id=f"sha256:{'d' * 64}", sha1=hashes.sha1, size=7)
+        )  # a foreign id, no sha256 column
+
+    with ArchiveDB(db_path) as db:
+        record = db.file_record(hashes, 7, "v1.cbz")
+
+    assert record.id == f"sha256:{'d' * 64}"  # merged into the existing row
+    assert record.sha256 == hashes.sha256
+    assert record.sha1 == hashes.sha1
+
+
+def test_file_record_skips_empty_hash_fields(repo, db_path):
+    """A lookup whose sha1 is empty falls through to the md5 column."""
+    md5 = "c" * 32
+    with MetaDB(db_path) as meta:
+        meta.put(File(id=f"sha256:{'e' * 64}", md5=md5, size=7))
+
+    with ArchiveDB(db_path) as db:
+        record = db.file_record(Hashes(sha256="f" * 64, sha1="", md5=md5), 7, "v1.cbz")
+
+    assert record.id == f"sha256:{'e' * 64}"
+    assert record.sha256 == "f" * 64
+
+
 def test_hashes_of_reads_columns_and_falls_back_to_id():
     sha256 = "a" * 64
     full = File(id=f"sha256:{sha256}", sha256=sha256, sha1="b" * 40, md5="c" * 32)

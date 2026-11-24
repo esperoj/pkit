@@ -1,18 +1,12 @@
-from dataclasses import asdict, fields
-from json import dumps, loads
+"""Record <-> JSON boundary: mappings in, typed records out."""
+
+import json
+from dataclasses import fields
 from typing import Any
 
 from pkit.meta.models import RECORD_TYPES, Record
 
-__all__ = ["from_dict", "from_json", "to_dict", "to_json"]
-
-
-def to_dict(model: Record) -> dict[str, Any]:
-    return asdict(model)
-
-
-def to_json(model: Record) -> str:
-    return dumps(to_dict(model), indent=2, ensure_ascii=False, sort_keys=True)
+__all__ = ["from_dict", "from_json"]
 
 
 def from_dict(data: dict[str, Any]) -> Record:
@@ -28,4 +22,4 @@ def from_dict(data: dict[str, Any]) -> Record:
 
 
 def from_json(payload: str | bytes) -> Record:
-    return from_dict(loads(payload))
+    return from_dict(json.loads(payload))
