@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -572,11 +573,11 @@ def test_migrations_apply_once(tmp_path):
 
 def test_migrate_reports_each_applied_name(tmp_path):
     path = tmp_path / "records.db"
-    with lib_sqlite.connect(path) as conn:
+    with closing(lib_sqlite.connect(path)) as conn:
         applied = lib_sqlite.migrate(conn, "pkit/meta/migrations")
 
     assert applied == MIGRATIONS
-    with lib_sqlite.connect(path) as conn:
+    with closing(lib_sqlite.connect(path)) as conn:
         assert lib_sqlite.migrate(conn, "pkit/meta/migrations") == []
 
 
@@ -591,7 +592,7 @@ def test_migrate_reports_only_new_files(tmp_path):
         "CREATE TABLE IF NOT EXISTS baseline (id TEXT);\n", encoding="utf-8"
     )
 
-    with lib_sqlite.connect(path) as conn:
+    with closing(lib_sqlite.connect(path)) as conn:
         assert lib_sqlite.migrate(conn, extra) == ["0000_baseline.sql"]
 
 
@@ -605,19 +606,19 @@ def test_migrate_skips_concurrently_applied(tmp_path, monkeypatch):
         if self.name == "0001_files.sql" and not state["injected"] and not state["busy"]:
             state["busy"] = True
             try:
-                with lib_sqlite.connect(path) as other:
+                with closing(lib_sqlite.connect(path)) as other:
                     lib_sqlite.migrate(other, "pkit/meta/migrations")
                 state["injected"] = True
             finally:
                 state["busy"] = False
         return real_read_text(self, *args, **kwargs)
 
-    with lib_sqlite.connect(path) as conn:
+    with closing(lib_sqlite.connect(path)) as conn:
         monkeypatch.setattr(Path, "read_text", racing_read_text)
         applied = lib_sqlite.migrate(conn, "pkit/meta/migrations")
 
     assert applied == []
-    with lib_sqlite.connect(path, readonly=True) as conn:
+    with closing(lib_sqlite.connect(path, readonly=True)) as conn:
         count = conn.execute("SELECT count(*) FROM _migrations").fetchone()[0]
     assert count == len(MIGRATIONS)
 
@@ -652,7 +653,7 @@ def test_files_table_has_hash_and_name_columns(tmp_path):
 
 
 def test_migrate_with_missing_directory_returns_empty(tmp_path):
-    with lib_sqlite.connect(tmp_path / "records.db") as conn:
+    with closing(lib_sqlite.connect(tmp_path / "records.db")) as conn:
         assert lib_sqlite.migrate(conn, tmp_path / "no-such-dir") == []
 
 
@@ -684,7 +685,7 @@ def test_migrate_on_unwritable_database_fails_cleanly(tmp_path):
     )
 
     with (
-        lib_sqlite.connect(path) as conn,
+        closing(lib_sqlite.connect(path)) as conn,
         pytest.raises(sqlite3.OperationalError),
     ):
         lib_sqlite.migrate(conn, extra)

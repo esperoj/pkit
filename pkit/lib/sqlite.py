@@ -114,6 +114,9 @@ class Database:
     Context-manager contract: commit on success, roll back on error, always
     close. commit() stays public for callers that need intermediate
     durability inside one long session (archive.add commits per file).
+    applied_migrations records what connecting migrated ([] when the
+    database is current or read-only), so callers like `pkit meta migrate`
+    can report it.
 
     readonly=True opens an existing non-empty database read-only (mode=ro,
     no DDL, no migrations); a missing or empty file is still created once,
@@ -133,8 +136,9 @@ class Database:
         )
         self.readonly = readonly and target.is_file() and target.stat().st_size > 0
         self.conn = connect(target, readonly=self.readonly)
+        self.applied_migrations: list[str] = []
         if not self.readonly and pending_migrations(self.conn, self.migrations_dir):
-            migrate(self.conn, self.migrations_dir)
+            self.applied_migrations = migrate(self.conn, self.migrations_dir)
 
     def commit(self) -> None:
         """Persist writes so far; the context exit commits the remainder."""

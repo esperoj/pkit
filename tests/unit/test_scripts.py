@@ -76,7 +76,9 @@ def restricted_path(tmp_path: Path, *tools: str) -> str:
     return str(bin_dir)
 
 
-# Everything the batch scripts shell out to (bash builtins aside).
+# Everything the batch scripts shell out to (bash builtins aside), plus what
+# GNU parallel itself runs from PATH: a non-built-in echo to probe the
+# maximum command line length at startup, and hostname to key its cache.
 BATCH_TOOLS = (
     "parallel",
     "find",
@@ -99,6 +101,8 @@ BATCH_TOOLS = (
     "bash",
     "sh",
     "env",
+    "echo",
+    "hostname",
 )
 
 
@@ -659,6 +663,7 @@ class TestArchivePackEncryption:
         assert (dest / "book" / "random.bin").read_bytes() == (source / "random.bin").read_bytes()
 
 
+@needs_parallel
 class TestBatchRun:
     """The engine: joblog, resume-without-repeat, retry, safe filenames."""
 
@@ -815,6 +820,7 @@ class TestBatchRun:
         assert ok == 12
 
 
+@needs_parallel
 class TestBatchCopy:
     """Directory expansion, failure isolation, resume without repetition."""
 
@@ -892,6 +898,7 @@ class TestBatchCopy:
         assert "no COMMAND given" in result.stderr
 
 
+@needs_parallel
 class TestBatchVerify:
     """CAS-link collection, hash dedup, sharding, default command."""
 

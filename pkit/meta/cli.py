@@ -9,7 +9,6 @@ pkit meta validate                                   # orphan link rows, duplica
 import argparse
 from collections.abc import Sequence
 
-from pkit.lib import sqlite
 from pkit.lib.cli import (
     EXIT_ERROR,
     EXIT_OK,
@@ -19,7 +18,6 @@ from pkit.lib.cli import (
     run_tool,
 )
 from pkit.lib.http import HttpError
-from pkit.meta import config as meta_config
 from pkit.meta import dump, load
 from pkit.meta.db import MetaDB
 from pkit.version import get_version
@@ -104,9 +102,8 @@ def _validate(_: argparse.Namespace) -> int:
 
 
 def _migrate(_: argparse.Namespace) -> int:
-    cfg = meta_config.load()
-    with sqlite.connect(cfg.db_path) as conn:
-        applied = sqlite.migrate(conn, cfg.migrations_dir)
+    with MetaDB() as db:
+        applied = db.applied_migrations
     for name in applied:
         print(name)
     return EXIT_OK
