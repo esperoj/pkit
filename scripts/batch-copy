@@ -19,11 +19,8 @@
 #   -h, --help     this help
 #
 # Examples:
-#   # a month of captures to an rclone remote (ia:, s3:, gdrive:, ...)
-#   batch-copy logs/copy-2026-10.tsv 2026-10/ -- rclone copyto {} ia:me/2026-10/{/}
-#
 #   # each file into the Wayback Machine (pkit stages and captures per file)
-#   batch-copy logs/wayback-2026-10.tsv books/ -- pkit archive copy {} wayback:
+#   batch-copy logs/wayback-2026-10.tsv software/pcsx2/ -- pkit archive copy "{}" "wayback:{//}"
 #
 #   set -euo pipefail
 
@@ -82,7 +79,7 @@ items=$(mktemp)
 trap 'rm -f -- "$items"' EXIT
 for src in "${sources[@]}"; do
         if [ -d "$src" ]; then
-                find "$src" -type f -not -path "*/.git/*" -print0 >>"$items"
+                find "$src" -type l -print0 >>"$items"
         elif [ -e "$src" ] || [ -L "$src" ]; then
                 printf '%s\0' "$src" >>"$items"
         else
