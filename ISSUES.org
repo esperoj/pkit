@@ -2,10 +2,62 @@
 #+AUTHOR: Esperoj
 #+STARTUP: showeverything
 #+FILETAGS: :pkit:
-
-# Custom TODO states for issue tracking:
-# OPEN states: TODO, IN_PROGRESS, WAITING
-# CLOSED states: DONE, WONTFIX, DUPLICATE
 #+TYP_TODO: TODO(t) IN_PROGRESS(i) WAITING(w) | DONE(d) WONTFIX(x) DUPLICATE(u)
 
-* TODO Add downloader argument to http lib to use aria2c to resume download and such. And auto use aria2c by default when using download feature and show progress to user. for example when running pkit archive get, use aria2c by default and show progress.
+# TODO states: OPEN = TODO, IN_PROGRESS, WAITING | CLOSED = DONE, WONTFIX, DUPLICATE
+
+* TODO Extract aria2c wrapper module (lib)
+  - New module: =lib/aria2c= — thin, general wrapper around the aria2c CLI.
+  - Resumable downloads, progress callback, options (concurrency, checksum, user-agent, headers).
+  - Used by =http= lib download method (preferred backend) and exposed implicitly to any package that imports =http= — e.g. =pkit archive get= gets aria2c + progress for free.
+  - Design: callable from =http= with a fallback to plain HTTP client when aria2c is unavailable or user opts out.
+  - Tags: :aria2c: :lib: :wrapper: :http:
+
+* TODO Add downloader argument to http lib download method
+  - Add a =downloader= argument: =http|aria2c|auto= (auto = aria2c if available, else http).
+  - Default should be auto (prefer aria2c) so resume + progress come by default in =pkit archive get= and any other consumer of the http module.
+  - Display progress to the user (bar or rate + ETA), unless a --quiet flag is passed.
+  - Depends on: aria2c wrapper module item above.
+  - Tags: :http-lib: :aria2c: :dl:
+
+* TODO Remove batch-copy; it is just a wrapper over batch-run
+  - Improve batch-run with a good default log: same command => same log file (deterministic name, e.g. hash of trimmed argv).
+  - Tags: :batch: :cleanup:
+
+* TODO Add wayback verification workflow
+  - Target: all files whose location is =wayback= with timestamp older than 32 days.
+  - Rationale: Internet Archive sometimes delays indexing, so re-verify after ~4 weeks to be certain.
+  - Options (decide): query DB via custom SQL; fetch all and filter in Python; or register a custom SQLite function.
+  - Tags: :wayback: :workflow: :verify:
+
+* TODO Add rclone cleanup for pkit-archive: delete files older than 35 days
+  - Rationale: wayback is unreliable; keep stage files for a safety window before deleting.
+  - Tags: :rclone: :cleanup: :archive:
+
+* TODO Add cdx features to wayback CLI
+  - Currently only has =save= command. Add cdx query/list/export subcommands.
+  - Tags: :wayback: :cli: :cdx:
+
+* TODO Move rclone CLI wrapper into lib as a reusable module
+  - Problem: rclone calls are duplicated in pkit, workflow, and possibly other projects.
+  - lib = general wrapper (rclone, wikidata, aria2c) reusable by workflow, other packages, pkit-archive, pkit-meta.
+  - Design question: lib/rclone (general wrapper) vs archive/rclone (adapter for wayback + potential backends)? Protocol vs object adapter?
+  - Tags: :rclone: :lib: :refactor:
+
+* TODO Evaluate moving Wikidata module into lib
+  - Current wikidata module is complex and not pkit-meta specific.
+  - lib/wikidata = general wrapper; pkit-meta/wikidata = adapter (possible future non-wikidata sources).
+  - Concern: adapter API is complex and hard to design when only one source exists today.
+  - Decision needed: keep concise, simple, elegant, and stable (project philosophy) — decide lib split for rclone + wikidata + aria2c together (same taxonomy).
+  - Related to: rclone lib refactor, aria2c wrapper.
+  - Tags: :wikidata: :lib: :refactor: :architecture:
+
+* TODO Add parallel tests to pytest
+  - Motivating factor: IO tests are slow and test count keeps growing.
+  - Consider =pytest-xdist= or a lighter alternative; ensure log-file default naming (batch-run item) does not collide under parallelism.
+  - Tags: :tests: :pytest: :perf:
+
+* TODO Design project as multiple small projects (modular)
+  - Project is outgrowing single-dev scale; the modular approach should make each part an independently usable small project.
+  - Ties into lib extraction decisions (aria2c, rclone, wikidata).
+  - Tags: :architecture: :modular:
