@@ -1,0 +1,11 @@
+#+TITLE: Project Issues & Tasks
+#+AUTHOR: Esperoj
+#+STARTUP: showeverything
+#+FILETAGS: :pkit:
+
+# Custom TODO states for issue tracking:
+# OPEN states: TODO, IN_PROGRESS, WAITING
+# CLOSED states: DONE, WONTFIX, DUPLICATE
+#+TYP_TODO: TODO(t) IN_PROGRESS(i) WAITING(w) | DONE(d) WONTFIX(x) DUPLICATE(u)
+
+* TODO Add downloader argument to http lib to use aria2c to resume download and such. And auto use aria2c by default when using download feature and show progress to user. for example when running pkit archive get, use aria2c by default and show progress.
