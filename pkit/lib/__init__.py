@@ -1,4 +1,5 @@
-"""Shared, tool-agnostic helpers: cli, config, http, shell, sql, sqlite.
+"""Shared, tool-agnostic helpers: aria2c, cli, config, http, rclone, shell,
+sql, sqlite.
 
 The only shared home in pkit: nothing here knows a tool, and tools map
 these helpers onto their own types. Scripts can build on it directly —
@@ -9,11 +10,27 @@ these helpers onto their own types. Scripts can build on it directly —
         db.conn.execute(sql.upsert("t", ["id", "name"]), (1, "Jun"))
 """
 
+from dataclasses import dataclass
 from typing import Self
 
-__all__ = ["CHUNK_SIZE", "Closeable"]
+__all__ = ["CHUNK_SIZE", "Closeable", "Progress"]
 
 CHUNK_SIZE = 1024 * 1024  # one streaming unit, shared by hashing and downloads
+
+
+@dataclass(frozen=True)
+class Progress:
+    """One download progress sample, from either download engine.
+
+    total is None when the size is unknown (no Content-Length, no summary
+    yet); eta is None when it cannot be estimated. Progress display is
+    diagnostics, never correctness: the caller still verifies the bytes.
+    """
+
+    received: int
+    total: int | None = None
+    rate: float = 0.0
+    eta: float | None = None
 
 
 class Closeable:

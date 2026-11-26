@@ -7,13 +7,14 @@ recorded locations. Hash tokens ("sha256:<hex>") are archive's own convention:
 pkit.meta.db stays unaware of them, this module maps them to File's columns.
 """
 
+import time
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import cast
 
 from pkit.archive.cas import Hashes
 from pkit.archive.errors import InputError
-from pkit.archive.remote import merge_locations
+from pkit.archive.remote import WAYBACK, merge_locations, split_wayback
 from pkit.meta.db import MetaDB
 from pkit.meta.models import File
 
@@ -97,6 +98,31 @@ class ArchiveDB(MetaDB):
                 if value:
                     index[f"{algo}:{value}"] = row["id"]
         return index
+
+    def wayback_stale(self, days: float) -> list[tuple[str, tuple[str, ...]]]:
+        """(record id, locations) whose wayback captures predate the cutoff.
+
+        json_each narrows the scan to wayback locations; the timestamp
+        comparison stays in Python — a capture URL is not a column, and
+        yyyymmddhhmmss timestamps already sort lexicographically. A
+        malformed location is skipped, not fatal: register only wrote good
+        ones, so a bad one is imported data worth seeing in a report later.
+        """
+        cutoff = time.strftime("%Y%m%d%H%M%S", time.gmtime(time.time() - days * 86400))
+        found: dict[str, list[str]] = {}
+        rows = self.conn.execute(
+            "SELECT files.id, _loc.value AS location "
+            "FROM files, json_each(files.locations) AS _loc WHERE _loc.value LIKE ?",
+            (f"{WAYBACK}%",),
+        )
+        for row in rows:
+            try:
+                timestamp, _ = split_wayback(row["location"])
+            except InputError:
+                continue
+            if timestamp < cutoff:
+                found.setdefault(row["id"], []).append(row["location"])
+        return [(record_id, tuple(locations)) for record_id, locations in found.items()]
 
 
 def hashes_of(record: File) -> Hashes:

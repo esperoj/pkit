@@ -7,9 +7,11 @@ in the tool's own cli module. Only stdlib argparse is used here.
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, is_dataclass
 from typing import Any
+
+from pkit.lib import Progress
 
 __all__ = [
     "EXIT_ERROR",
@@ -17,7 +19,10 @@ __all__ = [
     "EXIT_TEMPFAIL",
     "EXIT_USAGE",
     "emit",
+    "end_progress",
     "fail",
+    "format_progress",
+    "progress_reporter",
     "read_stdin_line",
     "run_tool",
 ]
@@ -63,6 +68,60 @@ def emit(result: Any, text: str | None, *, json_output: bool) -> None:
         print(json.dumps(_jsonable(result), indent=2))
     elif text:
         print(text)
+
+
+def _size(value: float) -> str:
+    """Bytes in the KiB/MiB family: "512B", "1.5KiB", "20MiB"."""
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024:
+            return f"{value:.1f}".rstrip("0").rstrip(".") + unit
+        value /= 1024
+    return f"{value:.1f}".rstrip("0").rstrip(".") + "TiB"
+
+
+def _duration(seconds: float) -> str:
+    """Seconds as "3s", "1m20s", "2h4m1s" — aria2c's own vocabulary."""
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h{minutes}m{secs}s"
+    if minutes:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
+def format_progress(progress: Progress) -> str:
+    """One compact progress line: "12.3MiB/20MiB 61% 2.5MiB/s ETA:3s"."""
+    total = _size(progress.total) if progress.total is not None else "?"
+    percent = f"{100 * progress.received / progress.total:.0f}%" if progress.total else "?"
+    line = f"{_size(progress.received)}/{total} {percent} {_size(progress.rate)}/s"
+    if progress.eta is not None:
+        line += f" ETA:{_duration(progress.eta)}"
+    return line
+
+
+def progress_reporter(quiet: bool) -> Callable[[Progress], None] | None:
+    """The CLI-side progress callback, or None when it would be noise.
+
+    One carriage-returned line per sample on stderr — no bar to redraw, no
+    progress at all under --quiet or when stderr is not a terminal (logs and
+    pipes stay clean).
+    """
+    if quiet or not sys.stderr.isatty():
+        return None
+
+    def report(progress: Progress) -> None:
+        sys.stderr.write(format_progress(progress) + "\r")
+        sys.stderr.flush()
+
+    return report
+
+
+def end_progress(reporter: Callable[[Progress], None] | None) -> None:
+    """Finish the progress line after a transfer (or do nothing)."""
+    if reporter is not None:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 def fail(

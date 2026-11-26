@@ -12,6 +12,7 @@ from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import RemoteFile
 from pkit.archive.wayback import WaybackBackend
+from pkit.lib import rclone as lib_rclone
 from pkit.lib.http import HttpClient, Response
 from pkit.lib.shell import CommandNotFound, ShellError
 from pkit.wayback.client import BASE_URL, CdxCapture, WaybackClient
@@ -135,15 +136,13 @@ class TestRcloneBackend:
         entry = Entry(path=root / "v1.cbz", relpath="v1.cbz", size=7, hashes=WANT)
         rclone.rows = [_row({"SHA-1": SHA1})]
         manifests: list[str] = []
-        real_run = RcloneBackend._run
+        real_copy_files = lib_rclone.copy_files
 
-        def spy_run(self, args):
-            if "copy" in args:
-                manifest = Path(next(arg for arg in args if arg.endswith(".txt")))
-                manifests.append(manifest.read_text())
-            return real_run(self, args)
+        def spy_copy_files(root_arg, prefix, manifest, *, timeout=None):
+            manifests.append(Path(manifest).read_text())
+            return real_copy_files(root_arg, prefix, manifest, timeout=timeout)
 
-        monkeypatch.setattr(RcloneBackend, "_run", spy_run)
+        monkeypatch.setattr(lib_rclone, "copy_files", spy_copy_files)
 
         with RcloneBackend("ia:x") as backend:
             files = list(backend.copy(root, [entry]))
@@ -163,7 +162,7 @@ class TestRcloneBackend:
         with RcloneBackend("ia:x") as backend:
             backend.fetch("ia:x/v1.cbz", tmp_path / "dest")
 
-        assert rclone.calls[0][:3] == ["rclone", "copyto", "ia:x/v1.cbz"]
+        assert rclone.calls[0][:4] == ["rclone", "copyto", "--copy-links", "ia:x/v1.cbz"]
 
 
 def _capture(
@@ -368,6 +367,25 @@ class TestWaybackBackend:
 
         with self.backend(fake_http) as backend, pytest.raises(ArchiveError):
             backend.fetch(f"wayback:{url}", tmp_path / "obj")
+
+    def test_fetch_forwards_progress_to_the_download(self, fake_http, tmp_path):
+        url = f"{BASE_URL}/web/9id_/https://host/manga/v1.cbz"
+        fake_http.on(url, content=PAYLOAD)
+        seen: list[dict] = []
+        real_download = fake_http.download
+
+        def spy_download(url_arg, dest, *, downloader=None, progress=None):
+            seen.append({"url": url_arg, "progress": progress})
+            return real_download(url_arg, dest)
+
+        fake_http.download = spy_download
+        report = print
+
+        with self.backend(fake_http) as backend:
+            backend.fetch(f"wayback:{url}", tmp_path / "obj", progress=report)
+
+        assert seen[0]["url"] == url
+        assert seen[0]["progress"] is report
 
 
 class TestWaybackBackendRewriting:

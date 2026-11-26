@@ -1,18 +1,24 @@
 #+title: pkit wayback
 
-Save URLs to the Wayback Machine using the SPN2 (Save Page Now 2) API.
+Save URLs to the Wayback Machine using the SPN2 (Save Page Now 2) API, and
+query the CDX index of what the archive holds.
 
 #+begin_src sh
 pkit wayback save https://example.com
+pkit wayback cdx query https://example.com
 #+end_src
 
 * Usage
 
 #+begin_src text
-pkit wayback [--key K] [--secret S] [--proxy P] [--host H] [--lock-file F] [--timeout T] save [URL] [options]
+pkit wayback [--key K] [--secret S] [--proxy P] [--host H] [--lock-file F] [--timeout T]
+    save [URL] [options]
+    cdx query [URL] [--match-type M] [--limit N] [--json]
+    cdx list  [URL] [--json]
+    cdx export [URL] [--match-type M] [--limit N]    # CSV
 #+end_src
 
-Tool options come before ~save~; save options after it.
+Tool options come before the command; command options after it.
 
 | Option               | Default                         | Meaning                                   |
 |----------------------+---------------------------------+-------------------------------------------|
@@ -33,6 +39,28 @@ Save options (each has a ~--no-~ counterpart):
 | ~--force-get~       | on      | Force GET instead of HEAD                  |
 | ~--skip-first~      | on      | Skip if the URL was recently saved         |
 | ~--json~            | off     | Output JSON                                |
+
+* cdx — read the index
+
+~cdx~ wraps the CDX search API; no auth needed. Every subcommand takes the
+URL as its argument, or the first non-empty stdin line (omitted or ~-~).
+
+| Command             | Output                                                          |
+|---------------------+------------------------------------------------------------------|
+| ~cdx query URL~     | every capture, one ~timestamp<TAB>status<TAB>digest<TAB>URL~ line |
+| ~cdx list URL~      | one line per *distinct payload* (oldest capture per URL + digest) |
+| ~cdx export URL~    | every capture as CSV (the CDX fields verbatim)                   |
+
+Options: ~--match-type exact|prefix|host|domain~ (query, export), ~--limit N~
+(query, export), ~--json~ (query, list — the CdxCapture rows as JSON).
+
+#+begin_src sh
+pkit wayback cdx query --match-type prefix https://example.com/dir/
+echo https://example.com | pkit wayback cdx list --json
+pkit wayback cdx export https://example.com > captures.csv
+#+end_src
+
+A URL with no captures prints nothing and exits 0 — no data is data.
 
 * stdin
 

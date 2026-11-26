@@ -16,25 +16,36 @@ Authorization trust policy on every hop.
 proxy_prefix and host_map default to the [http] config section:
 proxy_prefix / PKIT_HTTP_PROXY_PREFIX and the [http.hosts] table. An
 explicitly passed value overrides the config; an empty one disables it.
+
+Downloads pick their engine through downloader: "auto" (the default)
+uses aria2c when it is installed and falls back to this client; "http"
+or "aria2c" pin one. The default comes from [http] downloader /
+PKIT_HTTP_DOWNLOADER. The aria2c path resolves the URL through the same
+rewrite (mirror or proxy), passes this client's headers and user agent,
+and reports Progress samples from aria2c's own summary lines; the http
+path streams and computes them itself. A failure from either engine is
+one HttpError.
 """
 
 import email.message
 import http.client
 import json
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import IO, Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
-from pkit.lib import CHUNK_SIZE, Closeable, config
+from pkit.lib import CHUNK_SIZE, Closeable, Progress, aria2c, config, shell
 from pkit.version import get_version
 
-__all__ = ["HttpClient", "HttpError", "Response"]
+__all__ = ["Downloader", "HttpClient", "HttpError", "Response"]
 
 MAX_REDIRECTS = 10
 _REDIRECT_STATUSES = frozenset((301, 302, 303, 307, 308))
+Downloader = str  # "http" | "aria2c" | "auto" — kept loose, validated at use
 # Characters quote() may leave alone: the RFC 3986 reserved set plus "%"
 # (so existing escapes are never doubled). Everything non-ASCII — and the
 # few ASCII characters that are genuinely illegal in a URL — gets escaped.
@@ -54,15 +65,16 @@ class HttpError(Exception):
         self.body = body
 
 
-def _http_config() -> tuple[str, dict[str, str]]:
-    """Load the [http] section: proxy_prefix plus the [http.hosts] table."""
+def _http_config() -> tuple[str, dict[str, str], str]:
+    """Load the [http] section: proxy_prefix, the [http.hosts] table, downloader."""
     data = config.load()
     section = data.get("http")
     section = section if isinstance(section, dict) else {}
     prefix = str(config.pick("PKIT_HTTP_PROXY_PREFIX", section.get("proxy_prefix"), ""))
     hosts = section.get("hosts")
     hosts = hosts if isinstance(hosts, dict) else {}
-    return prefix, {str(key).lower(): str(value) for key, value in hosts.items()}
+    downloader = str(config.pick("PKIT_HTTP_DOWNLOADER", section.get("downloader"), "auto"))
+    return prefix, {str(key).lower(): str(value) for key, value in hosts.items()}, downloader
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -170,8 +182,9 @@ class HttpClient(Closeable):
         headers: dict[str, str] | None = None,
         proxy_prefix: str | None = None,
         host_map: Mapping[str, str] | None = None,
+        downloader: Downloader | None = None,
     ) -> None:
-        cfg_prefix, cfg_hosts = _http_config()
+        cfg_prefix, cfg_hosts, cfg_downloader = _http_config()
         if proxy_prefix is None:
             proxy_prefix = cfg_prefix
         if host_map is None:
@@ -180,9 +193,12 @@ class HttpClient(Closeable):
             hosts = {**cfg_hosts, **dict(host_map)}  # caller entries win on conflicts
         else:
             hosts = {}
+        if downloader is None:
+            downloader = cfg_downloader
         self.timeout = timeout
         self.proxy_prefix = proxy_prefix
         self.host_map = {str(key).lower(): str(value) for key, value in hosts.items()}
+        self.downloader = downloader
         self._headers: dict[str, str] = {"User-Agent": f"pkit/{get_version()}"}
         if headers:
             self._headers.update(headers)
@@ -307,16 +323,73 @@ class HttpClient(Closeable):
         hop.pop("Authorization", None)
         return hop
 
-    def download(self, url: str, dest: str | Path) -> Path:
-        """Stream a URL to a file. The caller owns the destination path."""
+    def download(
+        self,
+        url: str,
+        dest: str | Path,
+        *,
+        downloader: Downloader | None = None,
+        progress: Callable[[Progress], None] | None = None,
+    ) -> Path:
+        """Stream or fetch a URL to a file. The caller owns the destination.
+
+        downloader picks the engine (http, aria2c, or auto — aria2c when
+        installed, this client otherwise); None means the client default,
+        which comes from the [http] downloader config / PKIT_HTTP_DOWNLOADER.
+        progress, when given, receives Progress samples from either engine.
+        The http path removes a half-written dest on failure; the aria2c path
+        leaves it (with its .aria2 control file) for a resuming retry.
+        """
+        mode = self.downloader if downloader is None else downloader
+        if mode not in ("http", "aria2c", "auto"):
+            raise ValueError(f"unknown downloader {mode!r}; use http, aria2c or auto")
+        if mode != "http" and aria2c.available():
+            return self._download_aria2c(url, dest, progress)
+        if mode == "aria2c":
+            raise HttpError("aria2c is not installed (install it or use downloader 'http')")
+        return self._download_http(url, dest, progress)
+
+    def _download_aria2c(
+        self, url: str, dest: str | Path, progress: Callable[[Progress], None] | None
+    ) -> Path:
+        """One download through pkit.lib.aria2c: resolved URL, client headers."""
+        headers = {key: value for key, value in self._headers.items() if key != "User-Agent"}
+        try:
+            return aria2c.download(
+                self.resolve_url(url),
+                dest,
+                headers=headers,
+                user_agent=self._headers.get("User-Agent"),
+                timeout=self.timeout,
+                progress=progress,
+            )
+        except shell.ShellError as exc:
+            # aria2c follows redirects itself, so the auth-drop policy of
+            # request() cannot apply hop by hop; the caller still verifies.
+            raise HttpError(str(exc)) from exc
+
+    def _download_http(
+        self, url: str, dest: str | Path, progress: Callable[[Progress], None] | None
+    ) -> Path:
+        """One download through this client's own request loop."""
         path = Path(dest)
         path.parent.mkdir(parents=True, exist_ok=True)
         response = self.request("GET", url)
+        length = response.headers.get("Content-Length") or ""
+        total = int(length) if length.isdigit() else None
+        received = 0
+        start = time.monotonic()
         try:
             with path.open("wb") as handle:
                 # Empty chunks are a no-op write; no guard needed.
                 while chunk := response.read(CHUNK_SIZE):
                     handle.write(chunk)
+                    received += len(chunk)
+                    if progress is not None:
+                        elapsed = max(time.monotonic() - start, 1e-9)
+                        rate = received / elapsed
+                        eta = (total - received) / rate if total and total > received else None
+                        progress(Progress(received, total, rate, eta))
         except (OSError, http.client.HTTPException) as exc:
             path.unlink(missing_ok=True)
             raise HttpError(str(exc)) from exc

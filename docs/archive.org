@@ -38,13 +38,15 @@ archive.get(manga)  # fetch it back, verified
 #+begin_src text
 pkit archive add PATH...               # ingest: CAS, symlinks, records
 pkit archive fix PATH                  # re-point links, re-assert perms
-pkit archive copy PATH REMOTE          # transfer missing, register
-pkit archive match REMOTE              # register known content, no transfer
-pkit archive verify PATH [REMOTE...]   # report local + remote integrity
-pkit archive drop PATH                 # delete local copy once a remote is proven
-pkit archive get PATH [REMOTE]         # restore a verified copy
-pkit archive forget PATH               # delete records for dangling links
+pkit archive copy PATH REMOTE           # transfer missing, register
+pkit archive match REMOTE               # register known content, no transfer
+pkit archive verify PATH [REMOTE...]    # report local + remote integrity
+pkit archive verify-wayback [--days N]  # re-verify stale wayback captures
+pkit archive drop PATH                  # delete local copy once a remote is proven
+pkit archive get PATH [REMOTE] [--quiet] # restore a verified copy, with progress
+pkit archive forget PATH                # delete records for dangling links
 pkit archive remove-location PATH LOCATION
+pkit archive cleanup [--age 35d] [--dry-run] # delete old staged files
 #+end_src
 
 Every command takes ~--json~ for structured output. Plain output is one
@@ -64,10 +66,12 @@ config; the CAS root is found by walking up to ~.git~ (override with
 | ~copy(path, remote)~              | list dest once, transfer only missing, register. Meaningful names.      |
 | ~match(remote)~                   | list dest once, register hashes already known. No transfer.             |
 | ~verify(path, remotes=())~        | report ~ok~ / ~mismatch~ / ~missing~ / ~unknown~ per record. Never prunes. |
+| ~verify_wayback(days=32)~         | re-verify wayback captures older than ~days~, from the database.        |
 | ~drop(path)~                      | verify one remote live, then delete the object. Link stays dangling.    |
-| ~get(path, remote=None)~          | restore an object; the download is verified before it enters the CAS.   |
+| ~get(path, remote=None, progress=None)~ | restore an object; the download is verified before it enters the CAS. |
 | ~forget(path)~                    | delete records for dangling links. Refuses while the object exists.     |
 | ~remove_location(path, location)~ | manual cleanup after a verify report.                                   |
+| ~cleanup(age="35d", dry_run=False)~ | delete staged files older than the safety window.                      |
 
 Every path argument accepts a tree (one result per CAS link under it), a
 single file (even dangling), a CAS path, or a ~sha256:<hex>~ id.
@@ -98,6 +102,20 @@ CDX digests are base32 SHA1, converted to hex and matched against the ~sha1:~
 identifier. Only ~200~ captures are used, and only the oldest capture per
 (content, URL) is kept, so re-matching is idempotent.
 
+* Downloads and progress
+
+~get~ downloads through ~pkit.lib.http~'s ~downloader~ choice: ~auto~
+(default) uses ~aria2c~ when it is installed — resume, connections, its own
+retries — and falls back to the stdlib HTTP client otherwise. Pin the
+engine with the ~[http]~ section (~downloader = "http"~) or
+~$PKIT_HTTP_DOWNLOADER~; ~downloader="http"|"aria2c"|"auto"~ on the
+~HttpClient.download~ call wins over both.
+
+Unless ~--quiet~ is passed, ~pkit archive get~ shows a progress line on
+stderr (~12.3MiB/20MiB 61% 2.5MiB/s ETA:3s~) whenever stderr is a
+terminal — pipes and logs stay clean. Progress is diagnostics only; the
+download is always re-verified by hash before it enters the CAS.
+
 * Config
 
 #+begin_src toml
@@ -109,31 +127,55 @@ host = "archive.esperoj.eu.org"   # mirror rewriting web.archive.org requests
 
 [http]
 proxy_prefix = ""                 # or route all rewritten hosts through a proxy
+downloader = "auto"               # auto | aria2c | http (auto prefers aria2c)
 
 [http.hosts]
 "web.archive.org" = "archive.esperoj.eu.org"
 #+end_src
 
-~PKIT_ARCHIVE_WAYBACK_URL~, ~PKIT_WAYBACK_HOST~ and ~PKIT_HTTP_PROXY_PREFIX~
-override them. Stored ~wayback:~ locations are always canonical
-~https://web.archive.org/...~ URLs; the mirror host or proxy only rewrites
-requests at the transport layer (see [[file:wayback.org][docs/wayback.org]]).
+~PKIT_ARCHIVE_WAYBACK_URL~, ~PKIT_WAYBACK_HOST~, ~PKIT_HTTP_PROXY_PREFIX~ and
+~PKIT_HTTP_DOWNLOADER~ override them. Stored ~wayback:~ locations are always
+canonical ~https://web.archive.org/...~ URLs; the mirror host or proxy only
+rewrites requests at the transport layer (see [[file:wayback.org][docs/wayback.org]]).
 
-Staging uses the rclone remote ~pkit-archive:~. Staging is *temporary and never registered as a location* —
+Staging uses the rclone remote ~pkit-archive:~ (invoked through
+~pkit.lib.rclone~). Staging is *temporary and never registered as a location* —
 only the Wayback capture is.
 
-Wayback captures are registered unverified because CDX indexing lags. Run
-~verify~ later — a sharded, resumable daily sweep works well:
+Wayback captures are registered unverified because CDX indexing lags. The
+monthly rhythm:
+
+1. *Sweep the tree* — ~verify~ over the CAS links; a sharded, resumable
+   daily sweep works well:
 
 #+begin_src sh
 scripts/batch-verify --shard "$(date +%-d)" --delay 5 logs/verify-$(date +%Y-%m).tsv
+#+end_src
+
+2. *Re-verify the index* — captures older than ~32 days~ get a second look,
+   straight from the database (no tree walk):
+
+#+begin_src sh
+pkit archive verify-wayback            # --days 32; exits 1 when any check is not ok
+#+end_src
+
+3. *Reclaim the stage* — once re-verification has had its window, delete the
+   staged copies older than ~35 days~ (rclone does the age filtering;
+   ~--dry-run~ reports first):
+
+#+begin_src sh
+pkit archive cleanup --dry-run         # e.g. "7 staged files older than 35d ..."
+pkit archive cleanup                   # --age 35d
+#+end_src
+
+#+begin_src sh
 scripts/archive-pack -r age1... -s 100M big-dir/                 # deterministic, encrypted, chunked
 #+end_src
 
 See [[file:../scripts/README.org][scripts/README.org]]. ~drop~ always verifies one location live, so an
-unverified registration can never authorize a deletion. ~verify~ opens the
-database read-only, so parallel sweeps never contend for the SQLite write
-lock.
+unverified registration can never authorize a deletion. ~verify~ and
+~verify-wayback~ open the database read-only, so parallel sweeps never
+contend for the SQLite write lock.
 
 * Git workflow
 

@@ -22,7 +22,7 @@ from pkit.lib import shell
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 BASH = shutil.which("bash") or "/bin/bash"
-ALL_SCRIPTS = ("meta-diff-fzf", "archive-pack", "batch-run", "batch-copy", "batch-verify")
+ALL_SCRIPTS = ("meta-diff-fzf", "archive-pack", "batch-run", "batch-verify")
 needs_zstd = pytest.mark.skipif(shutil.which("zstd") is None, reason="zstd not installed")
 needs_age = pytest.mark.skipif(
     shutil.which("age") is None or shutil.which("age-keygen") is None,
@@ -740,9 +740,29 @@ class TestBatchRun:
         assert result.returncode == 0
         assert "0 items" in result.stderr
 
-    def test_missing_log_or_command_is_a_usage_error(self, tmp_path):
-        assert self.run("--", "echo", "{}").returncode == 2
+    def test_missing_command_is_a_usage_error(self, tmp_path):
         assert self.run("--log", str(tmp_path / "b.tsv")).returncode == 2
+
+    def test_default_log_derives_from_the_command(self, tmp_path):
+        """No --log: logs/batch-<hash>.tsv, same command => same file."""
+        self.run("--", "echo", "got-{}", cwd=tmp_path, items="a\nb\n")
+        logs = list((tmp_path / "logs").glob("batch-*.tsv"))
+        assert len(logs) == 1
+        assert logs[0].is_file()
+        assert len(self.joblog_rows(logs[0])) == 2
+
+    def test_default_log_resumes_the_same_command(self, tmp_path):
+        self.run("--", "echo", "got-{}", cwd=tmp_path, items="a\nb\n")
+        second = self.run("--", "echo", "got-{}", cwd=tmp_path, items="a\nb\n")
+
+        assert second.returncode == 0, second.stderr
+        assert "0 ok, 0 failed, 2 skipped" in second.stderr
+
+    def test_default_log_separates_different_commands(self, tmp_path):
+        self.run("--", "echo", "one-{}", cwd=tmp_path, items="a\n")
+        self.run("--", "echo", "two-{}", cwd=tmp_path, items="a\n")
+
+        assert len(list((tmp_path / "logs").glob("batch-*.tsv"))) == 2
 
     def test_unknown_option_fails_cleanly(self):
         result = self.run("--bogus", "--", "echo", "{}")
@@ -818,84 +838,6 @@ class TestBatchRun:
         assert resumed.returncode == 0, resumed.stderr
         ok = sum(1 for row in self.joblog_rows(log) if row[6] == "0")
         assert ok == 12
-
-
-@needs_parallel
-class TestBatchCopy:
-    """Directory expansion, failure isolation, resume without repetition."""
-
-    def make_sources(self, tmp_path: Path) -> Path:
-        src = tmp_path / "src"
-        (src / "sub").mkdir(parents=True)
-        (src / "a file.txt").write_text("one")
-        (src / "sub" / "b's file.txt").write_text("two")
-        (src / "broken.bin").write_text("nope")
-        return src
-
-    def test_copies_each_file_and_reports_one_failure(self, tmp_path):
-        src = self.make_sources(tmp_path)
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        log = tmp_path / "copy.tsv"
-        cmd = f"cp {{}} {dest}/{{/}} && ! grep -q nope {{}}"
-
-        result = run_script("batch-copy", str(log), str(src), "--", cmd)
-
-        assert result.returncode == 1
-        assert "2 ok, 1 failed, 0 skipped" in result.stderr
-        assert (dest / "a file.txt").read_text() == "one"
-        assert not (dest / "broken.bin").exists() or (dest / "broken.bin").exists()
-
-    def test_resume_retries_only_the_failed_file(self, tmp_path):
-        src = self.make_sources(tmp_path)
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        log = tmp_path / "copy.tsv"
-        fail = f"cp {{}} {dest}/{{/}} && ! grep -q nope {{}}"
-        run_script("batch-copy", str(log), str(src), "--", fail)
-        touched = dest / "a file.txt"
-        first_mtime = touched.stat().st_mtime_ns
-
-        result = run_script("batch-copy", str(log), str(src), "--", f"cp {{}} {dest}/{{/}}")
-
-        assert result.returncode == 0, result.stderr
-        assert "1 ok, 0 failed, 2 skipped" in result.stderr
-        assert touched.stat().st_mtime_ns == first_mtime  # successes never rerun
-
-    def test_single_files_and_missing_sources(self, tmp_path):
-        src = self.make_sources(tmp_path)
-        log = tmp_path / "copy.tsv"
-        result = run_script("batch-copy", str(log), str(src / "a file.txt"), "--", "echo copy-{}")
-        assert result.returncode == 0, result.stderr
-        assert "copy-" + str(src / "a file.txt") in result.stdout
-
-        result = run_script("batch-copy", str(log), str(tmp_path / "nope"), "--", "echo {}")
-        assert result.returncode == 2
-        assert "no such file or directory" in result.stderr
-
-    def test_no_files_found_is_an_error(self, tmp_path):
-        empty = tmp_path / "empty"
-        empty.mkdir()
-        result = run_script("batch-copy", str(tmp_path / "c.tsv"), str(empty), "--", "echo {}")
-        assert result.returncode == 2
-        assert "no files found" in result.stderr
-
-    def test_directories_skip_git_internals(self, tmp_path):
-        src = tmp_path / "src"
-        (src / ".git" / "objects").mkdir(parents=True)
-        (src / "book one.cbz").write_text("keep")
-        (src / ".git" / "objects" / "abc").write_text("skip")
-
-        result = run_script("batch-copy", str(tmp_path / "c.tsv"), str(src), "--", "echo {/}")
-
-        assert result.returncode == 0, result.stderr
-        assert "book one.cbz" in result.stdout
-        assert "abc" not in result.stdout
-
-    def test_missing_command_is_a_usage_error(self, tmp_path):
-        result = run_script("batch-copy", str(tmp_path / "c.tsv"), str(tmp_path))
-        assert result.returncode == 2
-        assert "no COMMAND given" in result.stderr
 
 
 @needs_parallel

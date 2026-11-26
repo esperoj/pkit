@@ -7,7 +7,7 @@ Staging (rclone "pkit-archive:") is transport only and is never registered.
 
 import base64
 import binascii
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from urllib.parse import quote
 
@@ -15,7 +15,7 @@ from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import WAYBACK, RemoteFile, Status, split_wayback, wayback_location
-from pkit.lib import Closeable
+from pkit.lib import Closeable, Progress
 from pkit.lib.http import HttpClient, HttpError
 from pkit.wayback import client as wayback_client
 
@@ -141,11 +141,13 @@ class WaybackBackend(Closeable):
                 return "ok"
         return "mismatch"
 
-    def fetch(self, location: str, dest: Path) -> None:
-        """Download the raw capture payload."""
+    def fetch(
+        self, location: str, dest: Path, *, progress: Callable[[Progress], None] | None = None
+    ) -> None:
+        """Download the raw capture payload (aria2c when available; see http)."""
         url = location.removeprefix(WAYBACK)
         try:
-            self._http.download(url, dest)
+            self._http.download(url, dest, progress=progress)
         except HttpError as exc:
             if exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500:
                 raise TransientError(str(exc)) from exc

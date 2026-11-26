@@ -11,6 +11,7 @@ canonical https://web.archive.org/..., and so are the results it returns.
 import fcntl
 import os
 import time
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -105,6 +106,19 @@ def _wayback_error(exc: HttpError) -> WaybackError:
     if exc.status_code == 429:
         return RateLimitError(message)
     return WaybackError(message)
+
+
+def distinct_captures(captures: Sequence[CdxCapture]) -> list[CdxCapture]:
+    """The first capture per distinct payload: (original, digest) keys.
+
+    CDX rows arrive oldest first, so the first row per key is the earliest
+    capture of that payload — one row per version that actually exists in
+    the archive, the way `pkit wayback cdx list` presents it.
+    """
+    seen: dict[tuple[str, str], CdxCapture] = {}
+    for capture in captures:
+        seen.setdefault((capture.original, capture.digest), capture)
+    return list(seen.values())
 
 
 def host_map_for(host: str) -> dict[str, str]:

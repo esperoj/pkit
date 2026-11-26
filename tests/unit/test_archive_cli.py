@@ -1,5 +1,7 @@
+import io
 import json
 import os
+import sys
 from dataclasses import replace
 
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from pkit import archive
 from pkit.archive.cas import cas_path, hash_file
 from pkit.archive.cli import main
+from pkit.archive.db import ArchiveDB
 from pkit.archive.rclone import RcloneBackend
 from pkit.archive.remote import RemoteFile
 from pkit.lib.cli import EXIT_ERROR, EXIT_OK, EXIT_TEMPFAIL, EXIT_USAGE
@@ -268,7 +271,7 @@ def test_get_restores_from_remote(run_cli, repo, db_path, added, rclone, monkeyp
     obj = cas_path(repo / ".git" / "pkit-archive", added.sha256)
     obj.unlink()
 
-    def fake_fetch(self, location, dest):
+    def fake_fetch(self, location, dest, *, progress=None):
         dest.write_bytes(PAYLOAD)
 
     monkeypatch.setattr(RcloneBackend, "fetch", fake_fetch)
@@ -330,3 +333,84 @@ def test_meta_reads_what_archive_writes(run_cli, repo, db_path, added, tmp_path)
 
     assert code == EXIT_OK, err
     assert out.strip() == "1"
+
+
+# --- get --quiet and the progress wiring ---------------------------------------
+
+
+class TtyStderr(io.StringIO):
+    """A stderr that claims to be a terminal, so progress reporting turns on."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_get_passes_progress_when_stderr_is_a_tty(
+    run_cli, repo, db_path, added, install_backend, monkeypatch
+):
+    backend = install_backend(files=[RemoteFile(location="fake:v1.cbz", hashes=added.identifiers)])
+    backend.store["fake:v1.cbz"] = PAYLOAD
+    with ArchiveDB(db_path) as db:
+        db.register(f"sha256:{added.sha256}", ["fake:v1.cbz"])
+    (repo / ".git" / "pkit-archive" / added.sha256[:2] / added.sha256).unlink()
+    tty = TtyStderr()
+    monkeypatch.setattr(sys, "stderr", tty)
+
+    code, _out, _err = run_cli(main, ["get", str(repo / "manga" / "v1.cbz")])
+
+    assert code == EXIT_OK, tty.getvalue()
+    assert backend.progress is not None
+
+
+def test_get_quiet_disables_progress(run_cli, repo, db_path, added, install_backend, monkeypatch):
+    backend = install_backend(files=[RemoteFile(location="fake:v1.cbz", hashes=added.identifiers)])
+    backend.store["fake:v1.cbz"] = PAYLOAD
+    with ArchiveDB(db_path) as db:
+        db.register(f"sha256:{added.sha256}", ["fake:v1.cbz"])
+    (repo / ".git" / "pkit-archive" / added.sha256[:2] / added.sha256).unlink()
+    tty = TtyStderr()
+    monkeypatch.setattr(sys, "stderr", tty)
+
+    code, _out, _err = run_cli(main, ["get", "--quiet", str(repo / "manga" / "v1.cbz")])
+
+    assert code == EXIT_OK, tty.getvalue()
+    assert backend.progress is None
+
+
+def test_get_no_progress_when_stderr_is_a_pipe(run_cli, repo, db_path, added, install_backend):
+    backend = install_backend(files=[RemoteFile(location="fake:v1.cbz", hashes=added.identifiers)])
+    backend.store["fake:v1.cbz"] = PAYLOAD
+    with ArchiveDB(db_path) as db:
+        db.register(f"sha256:{added.sha256}", ["fake:v1.cbz"])
+    (repo / ".git" / "pkit-archive" / added.sha256[:2] / added.sha256).unlink()
+
+    code, _out, _err = run_cli(main, ["get", str(repo / "manga" / "v1.cbz")])
+
+    assert code == EXIT_OK
+    assert backend.progress is None
+
+
+def test_verify_wayback_maps_transient_to_tempfail(run_cli, monkeypatch):
+    def raise_transient(days, **kwargs):
+        raise archive.TransientError("wire cut")
+
+    monkeypatch.setattr(archive, "verify_wayback", raise_transient)
+
+    code, out, err = run_cli(main, ["verify-wayback"])
+
+    assert code == EXIT_TEMPFAIL
+    assert "wire cut" in err
+    assert out == ""
+
+
+def test_get_maps_archive_error_to_exit_code(run_cli, repo, monkeypatch):
+    def raise_archive_error(*args, **kwargs):
+        raise archive.ArchiveError("no remote copy")
+
+    monkeypatch.setattr(archive, "get", raise_archive_error)
+
+    code, out, err = run_cli(main, ["get", str(repo / "manga" / "v1.cbz")])
+
+    assert code == EXIT_ERROR
+    assert "no remote copy" in err
+    assert out == ""

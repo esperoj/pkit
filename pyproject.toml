@@ -15,6 +15,7 @@ dev = [
     "pip-tools>=7.6.2",
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
     "ty>=0.0.94",
     "ruff>=0.17.3",
 ]

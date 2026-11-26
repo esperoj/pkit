@@ -7,6 +7,7 @@ from pkit.version import get_version
 from pkit.wayback.cli import main
 from pkit.wayback.client import (
     AuthError,
+    CdxCapture,
     InputError,
     JobFailedError,
     JobTimeoutError,
@@ -218,3 +219,167 @@ def test_cli_help_lists_host(capsys):
     assert "--host" in out
     assert "PKIT_WAYBACK_HOST" in out
     assert "--proxy" in out
+
+
+# --- cdx query / list / export ------------------------------------------------
+
+
+def capture(timestamp: str, digest: str = "D1", original: str = "https://u", code: str = "200"):
+    return {
+        "original": original,
+        "timestamp": timestamp,
+        "digest": digest,
+        "statuscode": code,
+        "mimetype": "text/html",
+    }
+
+
+def patch_cdx(monkeypatch, captures, *, error: WaybackError | None = None):
+    """Program the CLI's WaybackClient.cdx; record the calls it received."""
+    calls: list[dict] = []
+
+    def fake_cdx(self, url, *, match_type="exact", limit=None):
+        calls.append({"url": url, "match_type": match_type, "limit": limit})
+        if error is not None:
+            raise error
+        return [CdxCapture(**row) for row in captures]
+
+    monkeypatch.setattr("pkit.wayback.cli.WaybackClient.cdx", fake_cdx)
+    return calls
+
+
+CAPTURES = [capture("20200101000000"), capture("20200202000000")]
+
+
+def test_cdx_query_plain(run_cli, monkeypatch):
+    calls = patch_cdx(monkeypatch, CAPTURES)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "query", "https://u"])
+
+    assert code == 0, err
+    assert out.splitlines() == [
+        "20200101000000\t200\tD1\thttps://u",
+        "20200202000000\t200\tD1\thttps://u",
+    ]
+    assert calls == [{"url": "https://u", "match_type": "exact", "limit": None}]
+
+
+def test_cdx_query_passes_match_type_and_limit(run_cli, monkeypatch):
+    calls = patch_cdx(monkeypatch, CAPTURES)
+
+    code, _out, err = run_cli(
+        main,
+        [
+            "--lock-file",
+            "",
+            "cdx",
+            "query",
+            "--match-type",
+            "prefix",
+            "--limit",
+            "5",
+            "https://u/dir/",
+        ],
+    )
+
+    assert code == 0, err
+    assert calls[0]["match_type"] == "prefix"
+    assert calls[0]["limit"] == 5
+
+
+def test_cdx_query_json(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, CAPTURES)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "query", "--json", "https://u"])
+
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload[0]["timestamp"] == "20200101000000"
+    assert payload[1]["original"] == "https://u"
+
+
+def test_cdx_query_no_url_is_usage(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, CAPTURES)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "query"], input="")
+
+    assert code == EXIT_USAGE
+    assert "No target URL provided." in err
+    assert out == ""
+
+
+def test_cdx_query_reads_stdin(run_cli, monkeypatch):
+    calls = patch_cdx(monkeypatch, CAPTURES)
+
+    code, _out, err = run_cli(
+        main, ["--lock-file", "", "cdx", "query"], input="https://stdin\nhttps://ignored\n"
+    )
+
+    assert code == 0, err
+    assert calls[0]["url"] == "https://stdin"
+
+
+def test_cdx_list_dedupes_same_payload(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, CAPTURES)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "list", "https://u"])
+
+    assert code == 0, err
+    assert out.splitlines() == ["20200101000000\t200\tD1\thttps://u"]
+
+
+def test_cdx_export_csv(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, CAPTURES)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "export", "https://u"])
+
+    assert code == 0, err
+    lines = out.strip().splitlines()
+    assert lines[0] == "original,timestamp,digest,statuscode,mimetype"
+    assert lines[1] == "https://u,20200101000000,D1,200,text/html"
+
+
+def test_cdx_empty_report_is_silent_success(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, [])
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "query", "https://u"])
+
+    assert code == 0, err
+    assert out == ""
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (RateLimitError("HTTP 429: slow down"), EXIT_TEMPFAIL),
+        (WaybackError("HTTP 500: exploded"), EXIT_ERROR),
+    ],
+)
+def test_cdx_error_exit_codes(run_cli, monkeypatch, exc, expected):
+    patch_cdx(monkeypatch, [], error=exc)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "query", "https://u"])
+
+    assert code == expected
+    assert out == ""
+    assert str(exc) in err
+
+
+def test_cdx_export_no_url_is_usage(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, CAPTURES)
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "export"], input="")
+
+    assert code == EXIT_USAGE
+    assert "No target URL provided." in err
+    assert out == ""
+
+
+def test_cdx_export_error_exit_code(run_cli, monkeypatch):
+    patch_cdx(monkeypatch, CAPTURES, error=WaybackError("HTTP 500: exploded"))
+
+    code, out, err = run_cli(main, ["--lock-file", "", "cdx", "export", "https://u"])
+
+    assert code == EXIT_ERROR
+    assert out == ""
+    assert "exploded" in err

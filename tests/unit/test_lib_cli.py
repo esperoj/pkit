@@ -1,18 +1,23 @@
-"""lib.cli: exit codes, stdin line, emit, and the one main-loop."""
+"""lib.cli: exit codes, stdin line, emit, progress, and the one main-loop."""
 
 import argparse
+import io
 import json
 import sys
 from dataclasses import dataclass
 
 import pytest
 
+from pkit.lib import Progress
 from pkit.lib.cli import (
     EXIT_ERROR,
     EXIT_OK,
     EXIT_USAGE,
     emit,
+    end_progress,
     fail,
+    format_progress,
+    progress_reporter,
     read_stdin_line,
     run_tool,
 )
@@ -139,3 +144,64 @@ def test_run_tool_usage_error_exits_two():
         run_tool(parser, ["nope"])
 
     assert exc.value.code == EXIT_USAGE
+
+
+# --- progress formatting (shared by every download-facing CLI) ---------------
+
+
+def test_format_progress_compact_line():
+    assert format_progress(Progress(12 * 1024**2, 20 * 1024**2, 2.5 * 1024**2, 3)) == (
+        "12MiB/20MiB 60% 2.5MiB/s ETA:3s"
+    )
+
+
+def test_format_progress_unknown_total_and_rate():
+    assert format_progress(Progress(512)) == "512B/? ? 0B/s"
+
+
+def test_format_progress_minute_eta():
+    assert format_progress(Progress(1 * 1024**2, 2 * 1024**2, 1 * 1024**2, 80)).endswith(
+        "ETA:1m20s"
+    )
+
+
+def test_format_progress_hour_eta():
+    assert format_progress(Progress(1, 2, 1, 7441)).endswith("ETA:2h4m1s")
+
+
+def test_progress_reporter_off_when_quiet(monkeypatch):
+    tty = io.StringIO()
+    tty.isatty = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setattr(sys, "stderr", tty)
+
+    assert progress_reporter(quiet=True) is None
+
+
+def test_progress_reporter_off_when_stderr_is_not_a_tty(monkeypatch):
+    pipe = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", pipe)
+
+    assert progress_reporter(quiet=False) is None
+
+
+def test_progress_reporter_writes_stderr_lines(monkeypatch):
+    tty = io.StringIO()
+    tty.isatty = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setattr(sys, "stderr", tty)
+
+    reporter = progress_reporter(quiet=False)
+    assert reporter is not None
+    reporter(Progress(512, 1024, 256, 2))
+    end_progress(reporter)
+
+    text = tty.getvalue()
+    assert text.startswith("512B/1KiB 50% 256B/s ETA:2s\r")
+    assert text.endswith("\n")
+
+
+def test_end_progress_without_reporter_is_a_no_op():
+    end_progress(None)
+
+
+def test_format_progress_terabyte_scale():
+    assert format_progress(Progress(2 * 1024**4)).startswith("2TiB")

@@ -4,13 +4,20 @@
     pkit-wayback save URL          # same tool, standalone entry
     python -m pkit.wayback save URL
 
-Tool options come before the command; save options after it:
+    pkit wayback cdx query URL     # every capture, tab-separated
+    pkit wayback cdx list URL      # one row per distinct payload
+    pkit wayback cdx export URL    # every capture as CSV
+
+Tool options come before the command; command options after it:
 
     pkit wayback --key K --secret S save --json URL
+    pkit wayback cdx query --match-type prefix https://host/dir/
 """
 
 import argparse
+import csv
 import dataclasses
+import sys
 from collections.abc import Sequence
 
 from pkit.lib.cli import (
@@ -25,17 +32,20 @@ from pkit.lib.cli import (
 )
 from pkit.version import get_version
 from pkit.wayback.client import (
+    CDX_FIELDS,
     DEFAULT_HOST,
     DEFAULT_LOCK_FILE,
     ENV_ACCESS_KEY,
     ENV_SECRET_KEY,
     AuthError,
+    CdxCapture,
     InputError,
     JobTimeoutError,
     RateLimitError,
     SaveOptions,
     WaybackClient,
     WaybackError,
+    distinct_captures,
 )
 
 __all__ = ["DESCRIPTION", "main"]
@@ -136,7 +146,48 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_flag(save, "force_get", "Force a GET request instead of HEAD.")
     _add_flag(save, "skip_first_archive", "Skip archiving if the URL was recently saved.")
     save.set_defaults(func=_save)
+
+    cdx = sub.add_parser("cdx", help="Query the CDX index of captures for a URL.")
+    cdx_sub = cdx.add_subparsers(dest="cdx_command", required=True, metavar="COMMAND")
+
+    query = cdx_sub.add_parser(
+        "query", help="Every capture of one URL, one tab-separated line each."
+    )
+    _add_cdx_common(query)
+    query.add_argument(
+        "--match-type",
+        default="exact",
+        help="CDX match type: exact (default), prefix, host or domain.",
+    )
+    query.add_argument("--limit", type=int, default=None, help="Stop after N captures.")
+    query.set_defaults(func=_cdx_query)
+
+    listing = cdx_sub.add_parser(
+        "list", help="One line per distinct payload: the oldest capture per (URL, digest)."
+    )
+    _add_cdx_common(listing)
+    listing.set_defaults(func=_cdx_list)
+
+    export = cdx_sub.add_parser(
+        "export", help="Every capture as CSV (the CDX fields verbatim, stdout)."
+    )
+    export.add_argument(
+        "url", nargs="?", default=None, help="Target URL; omit or '-' to read stdin."
+    )
+    export.add_argument(
+        "--match-type",
+        default="exact",
+        help="CDX match type: exact (default), prefix, host or domain.",
+    )
+    export.add_argument("--limit", type=int, default=None, help="Stop after N captures.")
+    export.set_defaults(func=_cdx_export)
     return parser
+
+
+def _add_cdx_common(sub: argparse.ArgumentParser) -> None:
+    """The flags every cdx subcommand shares."""
+    sub.add_argument("url", nargs="?", default=None, help="Target URL; omit or '-' to read stdin.")
+    sub.add_argument("--json", dest="json_output", action="store_true", help="Output JSON.")
 
 
 def _save(args: argparse.Namespace) -> int:
@@ -162,6 +213,88 @@ def _save(args: argparse.Namespace) -> int:
         except WaybackError as exc:
             return fail(str(exc), exit_code=_exit_code_for_error(exc))
     emit(result, result.archive_url, json_output=args.json_output)
+    return EXIT_OK
+
+
+def _target_url(args: argparse.Namespace) -> str | None:
+    """The cdx target: the argument, or the first stdin line."""
+    url = None if getattr(args, "url", None) in (None, "-") else args.url
+    if url is None:
+        url = read_stdin_line()
+    return url or None
+
+
+def _plain_captures(captures: Sequence[CdxCapture]) -> str | None:
+    """One line per capture: timestamp, status, digest, URL."""
+    return (
+        "\n".join(
+            f"{capture.timestamp}\t{capture.statuscode}\t{capture.digest}\t{capture.original}"
+            for capture in captures
+        )
+        or None
+    )
+
+
+def _cdx_report(args: argparse.Namespace, *, distinct: bool = False) -> int:
+    """One cdx listing as plain or JSON output (query and list)."""
+    url = _target_url(args)
+    if url is None:
+        return fail("No target URL provided.", exit_code=EXIT_USAGE)
+    with WaybackClient(
+        api_key=args.api_key,
+        api_secret=args.api_secret,
+        proxy_prefix=args.proxy_prefix,
+        host=args.host,
+        lock_file=args.lock_file,
+        timeout=args.timeout,
+    ) as client:
+        try:
+            captures = client.cdx(
+                url,
+                match_type=getattr(args, "match_type", "exact"),
+                limit=getattr(args, "limit", None),
+            )
+        except WaybackError as exc:
+            return fail(str(exc), exit_code=_exit_code_for_error(exc))
+    if distinct:
+        captures = distinct_captures(captures)
+    emit(captures, _plain_captures(captures), json_output=args.json_output)
+    return EXIT_OK
+
+
+def _cdx_query(args: argparse.Namespace) -> int:
+    return _cdx_report(args)
+
+
+def _cdx_list(args: argparse.Namespace) -> int:
+    return _cdx_report(args, distinct=True)
+
+
+def _cdx_export(args: argparse.Namespace) -> int:
+    """CSV to stdout: the CDX fields verbatim, one row per capture."""
+    url = _target_url(args)
+    if url is None:
+        return fail("No target URL provided.", exit_code=EXIT_USAGE)
+    with WaybackClient(
+        api_key=args.api_key,
+        api_secret=args.api_secret,
+        proxy_prefix=args.proxy_prefix,
+        host=args.host,
+        lock_file=args.lock_file,
+        timeout=args.timeout,
+    ) as client:
+        try:
+            captures = client.cdx(
+                url,
+                match_type=args.match_type,
+                limit=args.limit,
+            )
+        except WaybackError as exc:
+            return fail(str(exc), exit_code=_exit_code_for_error(exc))
+    writer = csv.writer(sys.stdout)
+    writer.writerow(CDX_FIELDS.split(","))
+    for capture in captures:
+        writer.writerow(dataclasses.astuple(capture))
     return EXIT_OK
 
 

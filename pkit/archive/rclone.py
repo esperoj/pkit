@@ -1,10 +1,12 @@
 """rclone backend: any rclone remote, addressed as "name:path".
 
-rclone owns authentication, retries and transfer decisions. pkit only lists,
-copies and checks hashes.
+The adapter half of the rclone story: pkit.lib.rclone runs the binary and
+reads its exit codes; this module turns rows into RemoteFiles with hash
+tokens, verifies them against a Hashes set, and copies Entry manifests
+under meaningful names. rclone itself owns authentication, retries and
+transfer decisions; pkit only lists, copies and checks hashes.
 """
 
-import json
 import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -13,14 +15,20 @@ from typing import NoReturn
 from pkit.archive.cas import Entry, Hashes
 from pkit.archive.errors import ArchiveError, InputError, TransientError
 from pkit.archive.remote import RemoteFile, Status
-from pkit.lib import Closeable, shell
+from pkit.lib import Closeable, rclone, shell
 
-__all__ = ["RcloneBackend"]
+__all__ = ["RcloneBackend", "map_rclone_error"]
 
-RCLONE = "rclone"
 _ALGOS = {"MD5": "md5", "SHA1": "sha1", "SHA256": "sha256"}
-_NOT_FOUND = (3, 4)
-_TEMPFAIL = 5
+
+
+def map_rclone_error(exc: BaseException) -> NoReturn:
+    """Raise the archive error standing in for one lib rclone failure."""
+    if isinstance(exc, shell.CommandNotFound):
+        raise InputError(str(exc)) from exc
+    if isinstance(exc, rclone.TransientError):
+        raise TransientError(str(exc)) from exc
+    raise ArchiveError(str(exc)) from exc
 
 
 def _tokens(row: dict) -> tuple[str, ...]:
@@ -49,53 +57,26 @@ class RcloneBackend(Closeable):
         sep = "" if self.prefix.endswith(":") else "/"
         return f"{self.prefix}{sep}{relpath}"
 
-    def _raise(self, exc: shell.ShellError) -> NoReturn:
-        """Map one shell failure onto the archive error it means."""
-        if isinstance(exc, shell.CommandNotFound):
-            raise InputError(str(exc)) from exc
-        if exc.returncode == _TEMPFAIL:
-            raise TransientError(str(exc)) from exc
-        raise ArchiveError(str(exc)) from exc
-
-    def _run(self, args: Sequence[str]) -> str:
+    def _call(self, func, *args, **kwargs):
+        """One lib rclone call, with archive's error mapping."""
         try:
-            return shell.run([RCLONE, *args], timeout=self.timeout).stdout
-        except shell.ShellError as exc:
-            self._raise(exc)
-
-    def _try_run(self, args: Sequence[str]) -> str | None:
-        try:
-            return shell.run([RCLONE, *args], timeout=self.timeout).stdout
-        except shell.ShellError as exc:
-            if exc.returncode in _NOT_FOUND:
-                return None
-            self._raise(exc)
+            return func(*args, **kwargs)
+        except (rclone.RcloneError, shell.ShellError) as exc:
+            map_rclone_error(exc)
 
     # Sequence, not list: the method named `list` below shadows the builtin
     # inside the class body, so `list[...]` would not resolve as a type here.
-    def _rows(self, raw: str) -> Sequence[dict]:
-        try:
-            data = json.loads(raw or "[]")
-        except ValueError as exc:
-            raise ArchiveError("rclone lsjson returned invalid JSON") from exc
-        if isinstance(data, dict):
-            return [data]
-        if isinstance(data, list):
-            return [row for row in data if isinstance(row, dict)]
-        return []
-
     def list(self) -> Sequence[RemoteFile]:
         """One recursive listing with hashes for the whole prefix."""
-        raw = self._run(["lsjson", "--recursive", "--files-only", "--hash", self.prefix])
         out = []
-        for row in self._rows(raw):
+        for row in self._call(rclone.lsjson, self.prefix, timeout=self.timeout):
             relpath = str(row.get("Path") or row.get("Name") or "")
             out.append(RemoteFile(location=self.location(relpath), hashes=_tokens(row)))
         return out
 
     def put(self, source: Path, relpath: str) -> None:
         """Upload one file under a meaningful name (follows symlinks)."""
-        self._run(["copyto", "--copy-links", str(source), self.location(relpath)])
+        self._call(rclone.copyto, source, self.location(relpath), timeout=self.timeout)
 
     def copy(self, root: Path, entries: Sequence[Entry]) -> Iterator[RemoteFile]:
         """Transfer missing entries by relative path, then report what landed."""
@@ -108,32 +89,23 @@ class RcloneBackend(Closeable):
                 "\n".join(entry.relpath for entry in entries) + "\n",
                 encoding="utf-8",
             )
-            self._run(
-                [
-                    "copy",
-                    "--copy-links",
-                    "--checksum",
-                    "--files-from-raw",
-                    str(manifest),
-                    str(base),
-                    self.prefix,
-                ]
-            )
+            self._call(rclone.copy_files, base, self.prefix, manifest, timeout=self.timeout)
         return iter(self.list())
 
     def verify(self, location: str, want: Hashes) -> Status:
         """Check one object's hashes. Never prunes; the caller decides."""
-        raw = self._try_run(["lsjson", "--stat", "--hash", location])
-        if raw is None:
+        row = self._call(rclone.statjson, location, timeout=self.timeout)
+        if row is None or row.get("IsDir"):
             return "missing"
-        rows = self._rows(raw)
-        if not rows or rows[0].get("IsDir"):
-            return "missing"
-        tokens = _tokens(rows[0])
+        tokens = _tokens(row)
         if not tokens:
             return "unknown"
         return "ok" if set(tokens) & set(want.identifiers) else "mismatch"
 
-    def fetch(self, location: str, dest: Path) -> None:
-        """Download one object to a local path."""
-        self._run(["copyto", location, str(dest)])
+    def fetch(self, location: str, dest: Path, *, progress=None) -> None:
+        """Download one object to a local path.
+
+        progress is accepted for backend-protocol symmetry and unused:
+        rclone is silent on success and per-object fetches are short.
+        """
+        self._call(rclone.copyto, location, dest, timeout=self.timeout)

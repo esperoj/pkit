@@ -5,10 +5,12 @@
     pkit archive copy PATH REMOTE         # transfer missing, register
     pkit archive match REMOTE             # register known content, no transfer
     pkit archive verify PATH [REMOTE...]  # report local + remote integrity
-    pkit archive drop PATH               # delete local copy once a remote is proven
+    pkit archive verify-wayback          # re-verify stale wayback captures
+    pkit archive drop PATH                # delete local copy once a remote is proven
     pkit archive get PATH [REMOTE]        # restore a verified copy
     pkit archive forget PATH              # delete records for dangling links
     pkit archive remove-location PATH LOCATION
+    pkit archive cleanup                  # delete old staged files
 
 Every PATH is a tree (worked per CAS link under it) or a single target: a
 file, a CAS path, or a 'sha256:<hex>' id. The database and CAS root come
@@ -27,7 +29,9 @@ from pkit.lib.cli import (
     EXIT_TEMPFAIL,
     EXIT_USAGE,
     emit,
+    end_progress,
     fail,
+    progress_reporter,
     run_tool,
 )
 from pkit.version import get_version
@@ -119,6 +123,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.set_defaults(func=_verify)
 
+    wayback_verify = sub.add_parser(
+        "verify-wayback",
+        parents=[_json_parent()],
+        help="Re-verify wayback captures older than the grace window (default 32 days).",
+    )
+    wayback_verify.add_argument(
+        "--days",
+        type=int,
+        default=32,
+        help="Re-verify captures whose timestamp is older than this many days (default: 32).",
+    )
+    wayback_verify.set_defaults(func=_verify_wayback)
+
     drop = sub.add_parser(
         "drop",
         parents=[_json_parent()],
@@ -132,6 +149,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     get.add_argument("path", help="Tree, file, CAS path or 'sha256:<hex>' id.")
     get.add_argument("remote", nargs="?", default=None, help="Preferred remote (default: any).")
+    get.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress the download progress line (stderr).",
+    )
     get.set_defaults(func=_get)
 
     forget = sub.add_parser(
@@ -146,6 +168,23 @@ def _build_parser() -> argparse.ArgumentParser:
     remove.add_argument("path", help="Tree, file, CAS path or 'sha256:<hex>' id.")
     remove.add_argument("location", help="Recorded location to drop.")
     remove.set_defaults(func=_remove_location)
+
+    cleanup = sub.add_parser(
+        "cleanup",
+        parents=[_json_parent()],
+        help="Delete staged files older than the safety window (default 35 days).",
+    )
+    cleanup.add_argument(
+        "--age",
+        default="35d",
+        help="rclone duration; only staged files older than this are deleted (default: 35d).",
+    )
+    cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be deleted, delete nothing.",
+    )
+    cleanup.set_defaults(func=_cleanup)
     return parser
 
 
@@ -224,9 +263,23 @@ def _verify(args: argparse.Namespace) -> int:
     except (ArchiveError, OSError, ValueError) as exc:
         return fail(str(exc), exit_code=_exit_code(exc))
     emit(results, _plain_verify(results), json_output=args.json_output)
-    # A report is success only when every check passed; an empty report (a
-    # filter that matches nothing, a tree without CAS links) is the alert a
-    # sweep looks for.
+    return _verify_exit(results)
+
+
+def _verify_wayback(args: argparse.Namespace) -> int:
+    try:
+        results = archive.verify_wayback(args.days)
+    except (ArchiveError, OSError, ValueError) as exc:
+        return fail(str(exc), exit_code=_exit_code(exc))
+    emit(results, _plain_verify(results), json_output=args.json_output)
+    # No stale captures is the healthy month (unlike a tree verify, where an
+    # empty report is the alert a sweep looks for); any failed check is not.
+    return EXIT_OK if all(result.ok for result in results) else EXIT_ERROR
+
+
+def _verify_exit(results: tuple[archive.VerifyResult, ...]) -> int:
+    """A report is success only when every check passed; an empty report (a
+    filter that matches nothing) is the alert a sweep looks for."""
     return EXIT_OK if results and all(result.ok for result in results) else EXIT_ERROR
 
 
@@ -245,13 +298,14 @@ def _drop(args: argparse.Namespace) -> int:
 
 
 def _get(args: argparse.Namespace) -> int:
-    return _run(
-        archive.get,
-        json_output=args.json_output,
-        path=args.path,
-        remote=args.remote,
-        plain=lambda results: "\n".join(result.path for result in results) or None,
-    )
+    progress = progress_reporter(args.quiet)
+    try:
+        result = archive.get(args.path, args.remote, progress=progress)
+    except (ArchiveError, OSError, ValueError) as exc:
+        return fail(str(exc), exit_code=_exit_code(exc))
+    end_progress(progress)
+    emit(result, "\n".join(item.path for item in result) or None, json_output=args.json_output)
+    return EXIT_OK
 
 
 def _forget(args: argparse.Namespace) -> int:
@@ -275,6 +329,21 @@ def _remove_location(args: argparse.Namespace) -> int:
             )
             or None
         ),
+    )
+
+
+def _plain_cleanup(result: archive.CleanupResult) -> str:
+    verb = "would delete" if result.dry_run else "deleted"
+    return f"{result.eligible} staged files older than {result.age} on {result.remote.rstrip(':')} — {verb}"
+
+
+def _cleanup(args: argparse.Namespace) -> int:
+    return _run(
+        archive.cleanup,
+        json_output=args.json_output,
+        age=args.age,
+        dry_run=args.dry_run,
+        plain=_plain_cleanup,
     )
 
 

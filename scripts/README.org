@@ -13,7 +13,6 @@ chmod +x scripts/*
 | Script            | Purpose                                                       |
 |-------------------+---------------------------------------------------------------|
 | ~batch-run~       | Run one command per stdin item through GNU parallel, resumable |
-| ~batch-copy~      | Resumable batch copy/upload of a set of files                  |
 | ~batch-verify~    | Resumable, sharded ~pkit archive verify~ over a tree           |
 | ~meta-diff-fzf~   | Browse record repo changes (working tree vs HEAD) in ~fzf~     |
 | ~archive-pack~    | Deterministic ~tar.zst~ packing, optional ~age~ + ~split~      |
@@ -30,8 +29,9 @@ carries NUL bytes (~find -print0~) or one per line. The command may use
 parallel's replacement strings: ~{}~ (item), ~{/}~ (basename), ~{//~~
 (dirname), ~{.}~, ~{/.}~.
 
-Options: ~--log FILE~ (required), ~--jobs N~ (default 4), ~--delay SECS~,
-~--fresh~ (discard the joblog, start over), ~-h~.
+Options: ~--log FILE~ (default: ~logs/batch-<hash>.tsv~, derived from the
+command words — same command, same log), ~--jobs N~ (default 4),
+~--delay SECS~, ~--fresh~ (discard the joblog, start over), ~-h~.
 
 #+begin_src sh
 find manga/ -name '*.cbz' -print0 |
@@ -42,27 +42,26 @@ Output is tagged per job and printed live; a summary goes to stderr.
 Exit status: 0 when every job of this run succeeded, 1 when any failed,
 2 for usage errors.
 
-** batch-copy — copy or upload a set of files
+Without ~--log~, batch-run derives one: ~logs/batch-<16 hex>.tsv~, the hash
+of the command words. Same command, same log — a rerun resumes where the
+last one stopped and retries its failures; a different command gets its
+own log and never collides. Copy/upload batches work directly on top:
 
 #+begin_src sh
-batch-copy [OPTIONS] LOG SRC... -- COMMAND...
-#+end_src
-
-SRC files and directories expand to one job per file (~.git~ skipped);
-COMMAND is the copy
-adapter (~{}~ is the file path). An interrupted batch resumes, failed
-files retry on the next run, succeeded files never run again.
-
-#+begin_src sh
-# a month of captures to an rclone remote (ia:, s3:, gdrive:, ...)
-batch-copy logs/copy-2026-10.tsv 2026-10/ -- rclone copyto {} ia:me/2026-10/{/}
+# a month of captures to an rclone remote (ia:, s3:, gdrive: ...)
+find 2026-10/ -type f -print0 |
+  batch-run -- 'rclone copyto {} ia:me/2026-10/{/}'
 
 # each file into the Wayback Machine (pkit stages and captures per file)
-batch-copy logs/wayback-2026-10.tsv books/ -- pkit archive copy {} wayback:
+find books/ -type l -print0 |
+  batch-run --delay 5 -- 'pkit archive copy {} wayback:'
 #+end_src
 
-For anything unusual, feed ~batch-run~ directly (any producer, any
-command).
+Pass ~--log~ explicitly when a batch needs a time-scoped name
+(~logs/copy-2026-10.tsv~), when two commands share one item set, or when
+running the same command from several directories (each derives its own
+~./logs~). Run one batch at a time per command: the default log is a
+resume record, not a lock.
 
 ** batch-verify — verify CAS-linked content
 
@@ -88,8 +87,8 @@ A tree with no CAS links is an error: a sweep wants to hear about that.
 
 ** Job-log lifecycle
 
-One joblog per batch or time period, at an explicit path — that is the
-whole system:
+One joblog per batch — at an explicit path, or the command-derived default —
+that is the whole system:
 
 - *Resume*: re-running the same command with the same ~--log~ skips items
   that succeeded and retries the failed ones (parallel's
@@ -111,8 +110,10 @@ data, only time.
 - *Watch progress*: job output streams by live; ~tail -f LOG~ shows the
   raw joblog (tab-separated: seq, host, start, runtime, exitval, ...).
 
-The log keys on the items, not the command: give a batch that runs a
-different command its own log, or pass ~--fresh~.
+The log keys on the items, not the command: the default log name is the
+hash of the command words, so the mapping happens by itself; a log keyed
+differently (an explicit ~--log~ shared by several commands) wants a
+~--fresh~ when the command changes.
 
 ** meta-diff-fzf
 
@@ -148,8 +149,8 @@ archives are ordinary files, ready for ~pkit archive add~.
 
 | Tool            | Used by                     | Required                |
 |-----------------+-----------------------------+-------------------------|
-| ~parallel~      | ~batch-run/copy/verify~     | always (with perl)      |
-| ~find~, ~sort~  | ~batch-verify~, ~batch-copy~ | always (GNU)           |
+| ~parallel~      | ~batch-run/verify~          | always (with perl)      |
+| ~find~, ~sort~  | ~batch-verify~              | always (GNU)           |
 | ~git~           | ~meta-diff-fzf~             | always                  |
 | ~python3~       | ~meta-diff-fzf~             | always (stdlib only)    |
 | ~fzf~           | ~meta-diff-fzf~             | always                  |

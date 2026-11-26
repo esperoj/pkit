@@ -15,7 +15,8 @@
 #   producer | batch-run [OPTIONS] -- COMMAND...
 #
 # Options:
-#   --log FILE     joblog recording every job (required; one per batch)
+#   --log FILE     joblog recording every job (default: logs/batch-<hash>.tsv,
+#                  derived from the command — same command, same log)
 #   --jobs N       concurrent jobs (default: 4)
 #   --delay SECS   seconds between job starts, for rate-limited remotes
 #   --fresh        discard the existing joblog and start the batch over
@@ -23,8 +24,11 @@
 #
 # Resume and retry: re-running with the same --log skips items that
 # succeeded and retries the failed ones (parallel's --resume-failed).
-# The log keys on the items, not the command: give a batch that runs a
-# different command its own log, or pass --fresh.
+# The default log gives that for free: the file name is a hash of the
+# command words, so a rerun of the same command finds its own log in ./logs,
+# and a different command never collides with it. Give a batch its own
+# explicit --log when two commands share items or when a time-scoped log
+# (logs/copy-2026-10.tsv) is wanted, or pass --fresh.
 #
 # Job-log lifecycle: one log per batch or time period, for example
 # logs/copy-2026-10.tsv. Archive or delete a log only after a run reports
@@ -87,11 +91,18 @@ while [ $# -gt 0 ]; do
         esac
 done
 
-[ -n "$log" ] || die "--log FILE is required (one joblog per batch)"
 [[ $jobs =~ ^[1-9][0-9]*$ ]] || die "invalid --jobs: $jobs (expected 1, 2, ...)"
 [[ $delay =~ ^[0-9]+([.][0-9]+)?$ ]] || die "invalid --delay: $delay (expected seconds)"
 [ $# -ge 1 ] || die "no command given after --"
 command -v parallel >/dev/null 2>&1 || die "missing required tool: GNU parallel"
+
+# No --log given: derive one from the command words — same command, same log,
+# different commands never collide. Runs from other directories each get
+# their own ./logs; an explicit --log stays the way to share one.
+if [ -z "$log" ]; then
+        log="logs/batch-$(printf '%s\0' "$@" | sha256sum | cut -c1-16).tsv"
+        echo "batch-run: no --log given; using $log" >&2
+fi
 
 # Stage stdin once: batch-run owns the item stream from here on.
 input=$(mktemp)

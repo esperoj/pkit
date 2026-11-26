@@ -5,7 +5,9 @@ from urllib.parse import parse_qs
 
 import pytest
 
+from pkit.lib import Progress, aria2c
 from pkit.lib.http import HttpClient, HttpError, Response
+from pkit.lib.shell import ShellError
 from pkit.version import get_version
 
 
@@ -600,3 +602,164 @@ def test_download_cleans_up_on_unexpected_errors(patch_transport, tmp_path):
             http.download("https://example.com/thing", tmp_path / "partial.bin")
 
     assert not (tmp_path / "partial.bin").exists()
+
+
+# --- downloader: engine choice, aria2c path, progress -------------------------
+
+
+def test_download_auto_uses_aria2c_when_available(monkeypatch, tmp_path):
+    monkeypatch.setattr(aria2c, "which", lambda name: "/usr/bin/aria2c")
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append((url, str(dest), kwargs))
+        Path(dest).write_bytes(b"aria2c bytes")
+        return Path(dest)
+
+    monkeypatch.setattr(aria2c, "download", fake_download)
+
+    with HttpClient() as http:
+        assert http.download("https://example.com/thing", tmp_path / "f") == tmp_path / "f"
+
+    assert calls[0][0] == "https://example.com/thing"
+    assert calls[0][2]["user_agent"].startswith("pkit/")
+    assert (tmp_path / "f").read_bytes() == b"aria2c bytes"
+
+
+def test_download_auto_falls_back_to_http_without_aria2c(http_server, tmp_path):
+    http_server.route("GET", "/thing", text="bytes")
+
+    with HttpClient() as http:
+        assert http.download(f"{http_server.url}/thing", tmp_path / "f") == tmp_path / "f"
+
+    assert (tmp_path / "f").read_bytes() == b"bytes"
+
+
+def test_download_http_pinned_ignores_available_aria2c(monkeypatch, http_server, tmp_path):
+    monkeypatch.setattr(aria2c, "which", lambda name: "/usr/bin/aria2c")
+    used_aria2c = []
+    monkeypatch.setattr(aria2c, "download", lambda url, dest, **kwargs: used_aria2c.append(url))
+    http_server.route("GET", "/thing", text="bytes")
+
+    with HttpClient() as http:
+        assert (
+            http.download(f"{http_server.url}/thing", tmp_path / "f", downloader="http")
+            == tmp_path / "f"
+        )
+
+    assert used_aria2c == []
+    assert (tmp_path / "f").read_bytes() == b"bytes"
+
+
+def test_download_aria2c_pinned_but_missing_raises(monkeypatch, tmp_path):
+    with HttpClient() as http, pytest.raises(HttpError) as exc:
+        http.download("https://example.com/thing", tmp_path / "f", downloader="aria2c")
+
+    assert "aria2c is not installed" in str(exc.value)
+
+
+def test_download_rejects_unknown_downloader(http_server, tmp_path):
+    with HttpClient() as http, pytest.raises(ValueError):
+        http.download(f"{http_server.url}/thing", tmp_path / "f", downloader="curl")
+
+
+def test_download_downloader_env_config(monkeypatch, http_server, tmp_path):
+    """PKIT_HTTP_DOWNLOADER pins the engine without touching the call."""
+    monkeypatch.setattr(aria2c, "which", lambda name: "/usr/bin/aria2c")
+    monkeypatch.setenv("PKIT_HTTP_DOWNLOADER", "http")
+    used_aria2c = []
+    monkeypatch.setattr(aria2c, "download", lambda url, dest, **kwargs: used_aria2c.append(url))
+    http_server.route("GET", "/thing", text="bytes")
+
+    with HttpClient() as http:
+        http.download(f"{http_server.url}/thing", tmp_path / "f")
+
+    assert used_aria2c == []
+    assert (tmp_path / "f").read_bytes() == b"bytes"
+
+
+def test_download_aria2c_resolves_the_url_through_the_host_map(monkeypatch, tmp_path):
+    monkeypatch.setattr(aria2c, "which", lambda name: "/usr/bin/aria2c")
+    calls: list[str] = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append(url)
+        Path(dest).write_bytes(b"x")
+        return Path(dest)
+
+    monkeypatch.setattr(aria2c, "download", fake_download)
+    http = HttpClient(host_map={"example.com": "mirror.example.com:8443"})
+
+    http.download("https://example.com/thing", tmp_path / "f")
+
+    assert calls == ["https://mirror.example.com:8443/thing"]
+
+
+def test_download_aria2c_failure_maps_to_http_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(aria2c, "which", lambda name: "/usr/bin/aria2c")
+    monkeypatch.setattr(
+        aria2c,
+        "download",
+        lambda url, dest, **kwargs: (_ for _ in ()).throw(
+            ShellError("aria2c exited 1: boom", returncode=1)
+        ),
+    )
+
+    with HttpClient() as http, pytest.raises(HttpError) as exc:
+        http.download("https://example.com/thing", tmp_path / "f")
+
+    assert "aria2c exited 1" in str(exc.value)
+
+
+def test_download_forwards_progress_to_aria2c(monkeypatch, tmp_path):
+    monkeypatch.setattr(aria2c, "which", lambda name: "/usr/bin/aria2c")
+    seen: list[dict] = []
+
+    def fake_download(url, dest, **kwargs):
+        seen.append(kwargs)
+        Path(dest).write_bytes(b"x")
+        return Path(dest)
+
+    monkeypatch.setattr(aria2c, "download", fake_download)
+    report = print
+
+    with HttpClient() as http:
+        http.download("https://example.com/thing", tmp_path / "f", progress=report)
+
+    assert seen[0]["progress"] is report
+
+
+def test_download_http_reports_progress_samples(http_server, tmp_path):
+    http_server.route("GET", "/thing", text="0123456789")
+    samples: list[Progress] = []
+
+    with HttpClient() as http:
+        http.download(f"{http_server.url}/thing", tmp_path / "f", progress=samples.append)
+
+    assert samples[-1] == Progress(received=10, total=10, rate=samples[-1].rate, eta=None)
+    assert samples[0].total == 10
+
+
+def test_download_http_progress_without_total_is_unknown(http_server, tmp_path):
+    # A lying Content-Length ("not-a-number") reads as unknown size.
+    http_server.route("GET", "/thing", text="plain", headers={"Content-Length": "not-a-number"})
+    samples: list[Progress] = []
+
+    with HttpClient() as http:
+        http.download(f"{http_server.url}/thing", tmp_path / "f", progress=samples.append)
+
+    assert samples and all(sample.total is None for sample in samples)
+
+
+def test_download_http_error_leaves_no_dest(http_server, tmp_path):
+    http_server.route("GET", "/thing", status=500, text="exploded")
+
+    with HttpClient() as http, pytest.raises(HttpError):
+        http.download(f"{http_server.url}/thing", tmp_path / "gone.bin")
+
+    assert not (tmp_path / "gone.bin").exists()
+
+
+def test_downloader_from_constructor_argument():
+    assert HttpClient(downloader="http").downloader == "http"
+    assert HttpClient().downloader == "auto"

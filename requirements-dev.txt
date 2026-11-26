@@ -10,6 +10,8 @@ click==8.5.1
     # via pip-tools
 coverage==7.17.3
     # via pytest-cov
+execnet==2.1.2
+    # via pytest-xdist
 iniconfig==2.3.1
     # via pytest
 packaging==26.3
@@ -34,6 +36,8 @@ pytest==9.2.0
     #   pkit (pyproject.toml)
     #   pytest-cov
 pytest-cov==7.1.0
+    # via pkit (pyproject.toml)
+pytest-xdist==3.8.0
     # via pkit (pyproject.toml)
 ruff==0.17.5
     # via pkit (pyproject.toml)

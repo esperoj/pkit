@@ -31,10 +31,12 @@ easy deletion. Avoid: trendy deps, over-clever typing, internal DSLs.
 pkit/
 ├── cli.py               # BusyBox dispatcher (no argparse needed)
 ├── version.py           # version from installed distribution metadata
-├── lib/                 # shared, tool-agnostic (the ONLY shared home)
-│   ├── cli.py           # exit codes, emit, fail, run_tool
+├── lib/                 # shared kernel, tool-agnostic (the ONLY shared home)
+│   ├── aria2c.py        # aria2c wrapper: resumable downloads, progress
+│   ├── cli.py           # exit codes, emit, fail, progress, run_tool
 │   ├── config.py        # TOML file + environment, one precedence rule
-│   ├── http.py          # HttpClient: transport, timeout, HttpError, URL rewriting
+│   ├── http.py          # HttpClient: transport, timeout, HttpError, URL rewriting, downloader
+│   ├── rclone.py        # rclone wrapper: run, exit-code mapping, lsjson, delete
 │   ├── shell.py         # run external commands
 │   ├── sql.py           # SQL builders: quoting, placeholders, filters, sorts, upserts
 │   └── sqlite.py        # connect, migrations, the Database base class
@@ -45,26 +47,47 @@ pkit/
 │   ├── wikidata/        # extract.py (entity->values), plans.py, client.py
 │   └── migrations/      # one table per .sql file
 ├── archive/
-│   ├── cli.py           # add/fix/copy/match/verify/drop/get/forget/...
+│   ├── cli.py           # add/fix/copy/match/verify/verify-wayback/drop/get/forget/cleanup/...
 │   └── cas.py, db.py, errors.py, remote.py, rclone.py, wayback.py
 └── wayback/
-    ├── cli.py           # save (thin, argparse)
+    ├── cli.py           # save, cdx query/list/export (thin, argparse)
     └── client.py        # Wayback SDK client
 
 scripts/                 # project workflow helpers, outside the package
-└── meta-diff-fzf, archive-pack, batch-run, batch-copy, batch-verify
+└── meta-diff-fzf, archive-pack, batch-run, batch-verify
 #+end_src
 
 Every tool has three entry points (console script ~pkit-<tool>~, BusyBox
 subcommand ~pkit <tool>~, module ~python -m pkit.<tool>~) — one ~main()~ in
 each ~cli.py~, so all three stay in lockstep by construction.
 
+** Layering (the modular rule)
+
+One package, four independently liftable parts — checked by
+~tests/unit/test_boundaries.py~ so the rule is a contract, not a diagram:
+
+#+begin_src text
+lib       (kernel; imports stdlib + pkit.version only)
+wayback   (standalone SDK; imports lib)
+meta      (records data layer; imports lib)
+archive   (CAS + location log; imports lib, wayback and meta)
+#+end_src
+
+Nothing imports upward, and the tools' SDKs stay peers: the only cross-tool
+edges are archive's declared downward ones — meta (the location log lives
+in the records database) and wayback (captures and CDX listings go through
+its client). Each part could be lifted out as its own small project with
+~pkit.lib~ beneath it; until that day arrives, one install keeps the
+personal scale honest.
+
 ** Boundaries
 
 | Rule                          |                                                                        |
 |-------------------------------+------------------------------------------------------------------------|
 | SDK modules (~client.py~, ~db.py~) | Must NOT print, or know stdout/stderr/exit codes                 |
-| ~lib/*~                       | Tool-agnostic only; scripts may import ~pkit.lib~ directly            |
+| ~lib/*~                       | Tool-agnostic only; general wrappers (~aria2c~, ~rclone~) live beside it; scripts may import ~pkit.lib~ directly |
+| External-tool wrappers        | ~lib/aria2c.py~ and ~lib/rclone.py~ wrap the CLI; ~archive/rclone.py~ only adapts rows/Hashes onto them |
+| Wikidata                       | Stays in ~pkit.meta~: it maps onto record models, so it is not a lib wrapper |
 | URL rewriting                 | Only in ~lib/http.py~ (~proxy_prefix~, ~host_map~); SDKs return canonical URLs |
 | Version                       | Lives in ~pyproject.toml~; ~pkit.version.get_version()~ reads the installed metadata |
 | Version bumps                 | Via ~make bump VERSION=x.y.z~ / ~make release VERSION=x.y.z~; never by hand |
@@ -72,7 +95,10 @@ each ~cli.py~, so all three stay in lockstep by construction.
 ** SDK layer (library-only)
 
 Success returns frozen dataclasses; failure raises typed exceptions. HTTP via
-~pkit.lib.http.HttpClient~; external commands via ~pkit.lib.shell.run~.
+~pkit.lib.http.HttpClient~; external commands via ~pkit.lib.shell.run~; whole
+downloads via ~pkit.lib.aria2c~ (~HttpClient.download~ with ~downloader=auto~
+prefers it, falling back to the stdlib client when it is not installed);
+rclone via ~pkit.lib.rclone~.
 Clients are context managers and accept an injected ~http=~ so tests can
 substitute a fake per instance.
 
@@ -119,10 +145,11 @@ pip family: ~venv~ + ~pip~ + ~pip-tools~ + ~pipx~ (see
 
 * 6. Testing
 
-pytest, fakes only at boundaries pkit does not own: the network transport
-(~FakeHttpClient~ in ~tests/conftest.py~), the rclone binary, remote
-backends. sqlite and the filesystem are always real. CLI tests call
-~main([...])~ directly via the ~run_cli~ fixture.
+pytest (parallel by default through ~pytest-xdist~: ~make test~ runs
+~-n auto~, ~PYARGS="-n0"~ goes serial), fakes only at boundaries pkit does not
+own: the network transport (~FakeHttpClient~ in ~tests/conftest.py~), the
+aria2c and rclone binaries, remote backends. sqlite and the filesystem are
+always real. CLI tests call ~main([...])~ directly via the ~run_cli~ fixture.
 
 A few meaningful tests > many brittle tests. Tests serve as executable
 documentation of the contract.

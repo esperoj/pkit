@@ -12,7 +12,7 @@ Library only: results are dataclasses, failures raise typed exceptions.
 
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,16 +31,19 @@ from pkit.archive.cas import (
 )
 from pkit.archive.db import ArchiveDB, hashes_of
 from pkit.archive.errors import ArchiveError, InputError, TransientError
-from pkit.archive.rclone import RcloneBackend
+from pkit.archive.rclone import RcloneBackend, map_rclone_error
 from pkit.archive.remote import WAYBACK, Status, selects
-from pkit.archive.wayback import WaybackBackend
-from pkit.lib import config
+from pkit.archive.wayback import STAGE_REMOTE, WaybackBackend
+from pkit.lib import Progress, config, shell
+from pkit.lib.rclone import RcloneError, list_paths
+from pkit.lib.rclone import delete as rclone_delete
 from pkit.meta.models import File
 
 __all__ = [
     "AddResult",
     "ArchiveError",
     "Check",
+    "CleanupResult",
     "CopyResult",
     "DropResult",
     "FixResult",
@@ -51,6 +54,7 @@ __all__ = [
     "TransientError",
     "VerifyResult",
     "add",
+    "cleanup",
     "copy",
     "drop",
     "fix",
@@ -59,6 +63,7 @@ __all__ = [
     "match",
     "remove_location",
     "verify",
+    "verify_wayback",
 ]
 
 
@@ -123,6 +128,16 @@ class GetResult:
     record_id: str
     location: str
     path: str
+
+
+@dataclass(frozen=True)
+class CleanupResult:
+    """What a stage cleanup found and did."""
+
+    remote: str
+    age: str
+    eligible: int
+    dry_run: bool
 
 
 def _wayback_url(config_path: str | Path | None) -> str:
@@ -437,12 +452,15 @@ def get(
     db_path: str | Path | None = None,
     cas_dir: str | Path | None = None,
     config_path: str | Path | None = None,
+    progress: Callable[[Progress], None] | None = None,
 ) -> tuple[GetResult, ...]:
     """Restore local objects from remote copies, verifying the bytes.
 
     A tree path restores every CAS link under it and re-points the links.
     The DB resolves addresses; the download itself is the proof. A mismatch
-    never reaches the CAS.
+    never reaches the CAS. progress, when given, is forwarded to the
+    backend's fetch (wayback/http downloads report it; rclone fetches are
+    short and stay silent).
     """
     target = abs_path(path)
     cas = find_cas(target, cas_dir)
@@ -492,7 +510,7 @@ def get(
                     dest = Path(tmp) / hashes.sha256
                     try:
                         with _backend(location, url) as backend:
-                            backend.fetch(location, dest)
+                            backend.fetch(location, dest, progress=progress)
                     except TransientError as exc:
                         transient = exc
                         continue
@@ -523,3 +541,52 @@ def remove_location(
     """Drop one recorded remote copy after a verify report."""
     with ArchiveDB(db_path) as db:
         return tuple(db.remove_location(record_id, location) for record_id in _record_ids(path))
+
+
+def verify_wayback(
+    days: float = 32,
+    *,
+    db_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+) -> tuple[VerifyResult, ...]:
+    """Re-verify wayback captures older than the grace window (32 days).
+
+    The Internet Archive indexes captures with a delay, so a fresh capture
+    is weak evidence; after about a month, re-check. One result per record,
+    one check per stale capture — fresh captures are left for the next run.
+    Reports, never prunes; `verify` semantics, driven from the database
+    instead of a tree.
+    """
+    url = _wayback_url(config_path)
+    results: list[VerifyResult] = []
+    # Read-only connection, like verify: this runs while other tools work.
+    with ArchiveDB(db_path, readonly=True) as db:
+        for record_id, locations in db.wayback_stale(days):
+            hashes = hashes_of(db.load_file(record_id))
+            checks: list[Check] = []
+            for location in locations:
+                with _backend(location, url) as backend:
+                    status = backend.verify(location, hashes)
+                checks.append(Check(location=location, status=status))
+            results.append(VerifyResult(record_id=record_id, checks=tuple(checks)))
+    return tuple(results)
+
+
+def cleanup(
+    age: str = "35d",
+    *,
+    dry_run: bool = False,
+    remote: str = STAGE_REMOTE,
+) -> CleanupResult:
+    """Delete staged files older than the safety window (35 days).
+
+    Wayback is unreliable for weeks after a capture, so staging is kept as
+    a safety copy until re-verification (see verify_wayback) has had time
+    to run. rclone does the age filtering; nothing younger is touched.
+    """
+    try:
+        paths = list_paths(remote, min_age=age)
+        rclone_delete(remote, min_age=age, dry_run=dry_run)
+    except (RcloneError, shell.ShellError) as exc:
+        map_rclone_error(exc)
+    return CleanupResult(remote=remote, age=age, eligible=len(paths), dry_run=dry_run)

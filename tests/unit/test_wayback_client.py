@@ -17,6 +17,7 @@ from pkit.wayback.client import (
     SaveResult,
     WaybackClient,
     WaybackError,
+    distinct_captures,
     host_map_for,
 )
 
@@ -510,3 +511,18 @@ def test_cdx_sends_query(fake_http):
     assert "matchType=prefix" in url
     assert "limit=5" in url
     assert "url=https%3A%2F%2Fhost%2Fa" in url
+
+
+def test_distinct_captures_keeps_first_per_payload():
+    captures = [
+        CdxCapture("https://u", "20200101000000", "D1", "200", "text/plain"),
+        CdxCapture("https://u", "20200202000000", "D1", "200", "text/plain"),
+        CdxCapture("https://u", "20200303000000", "D2", "200", "text/plain"),
+        CdxCapture("https://v", "20200404000000", "D1", "200", "text/html"),
+    ]
+
+    assert distinct_captures(captures) == [captures[0], captures[2], captures[3]]
+
+
+def test_distinct_captures_empty():
+    assert distinct_captures([]) == []

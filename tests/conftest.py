@@ -154,7 +154,9 @@ class FakeHttpClient(HttpClient):
         self.requests.append({"method": method, "url": url, **kwargs})
         return self._serve(self._take(method, url), url)
 
-    def download(self, url: str, dest: str | Path) -> Path:
+    def download(
+        self, url: str, dest: str | Path, *, downloader: str | None = None, progress=None
+    ) -> Path:
         self.requests.append({"method": "GET", "url": url})
         response = self._serve(self._take("GET", url), url)
         path = Path(dest)
@@ -291,7 +293,11 @@ class FakeRclone:
             if isinstance(item, BaseException):
                 raise item
             return subprocess.CompletedProcess(list(args), 0, item, "")
-        out = json.dumps(self.rows) if "lsjson" in args else ""
+        out = ""
+        if "lsjson" in args:
+            out = json.dumps(self.rows)
+        elif "lsf" in args:
+            out = "\n".join(str(row.get("Path") or row.get("Name") or "") for row in self.rows)
         return subprocess.CompletedProcess(list(args), 0, out, "")
 
 
@@ -310,6 +316,7 @@ class FakeBackend(Closeable):
         self.uploads: list[str] = []
         self.verify_calls: list[str] = []
         self.error: Exception | None = None
+        self.progress = None
 
     def location(self, relpath: str) -> str:
         relpath = relpath.lstrip("/")
@@ -341,9 +348,10 @@ class FakeBackend(Closeable):
                 return "ok" if set(item.hashes) & set(want.identifiers) else "mismatch"
         return "missing"
 
-    def fetch(self, location: str, dest: Path) -> None:
+    def fetch(self, location: str, dest: Path, *, progress=None) -> None:
         if self.error is not None:
             raise self.error
+        self.progress = progress
         dest.write_bytes(self.store[location])
 
 
@@ -353,11 +361,16 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     A developer's real ~/.config/pkit/config.toml (and stray PKIT_HTTP_* /
     PKIT_WAYBACK_* env values) must never change test behavior: HttpClient
-    and WaybackClient read them on creation now.
+    and WaybackClient read them on creation now. aria2c is likewise pinned
+    off: a locally installed binary must not flip download tests onto the
+    aria2c path (tests that want it enable it explicitly).
     """
     monkeypatch.setenv("PKIT_CONFIG", str(tmp_path / "isolated-config.toml"))
-    for key in ("PKIT_HTTP_PROXY_PREFIX", "PKIT_WAYBACK_HOST"):
+    for key in ("PKIT_HTTP_PROXY_PREFIX", "PKIT_WAYBACK_HOST", "PKIT_HTTP_DOWNLOADER"):
         monkeypatch.delenv(key, raising=False)
+    # aria2c pinned off the same way — the module-local which() binding, so
+    # the real shutil.which stays intact for every other user.
+    monkeypatch.setattr("pkit.lib.aria2c.which", lambda name: None)
 
 
 @pytest.fixture
@@ -495,9 +508,13 @@ def added(repo: Path, db_path: Path) -> Hashes:
 
 @pytest.fixture
 def rclone(monkeypatch: pytest.MonkeyPatch) -> FakeRclone:
-    """Answer every rclone invocation from a FakeRclone."""
+    """Answer every rclone invocation from a FakeRclone.
+
+    The seam is pkit.lib.rclone's shell.run: everything rclone — lib wrapper
+    and archive adapter alike — crosses it.
+    """
     fake = FakeRclone()
-    monkeypatch.setattr("pkit.archive.rclone.shell.run", fake)
+    monkeypatch.setattr("pkit.lib.rclone.shell.run", fake)
     return fake
 
 
